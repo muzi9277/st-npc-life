@@ -1,0 +1,12 @@
+{
+  "display_name": "NPC Life · 活世界",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "muzi9277",
+  "version": "3.5.3-beta.1",
+  "homePage": "https://github.com/muzi9277/npc-life",
+  "auto_update": true
+}
