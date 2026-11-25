@@ -56,14 +56,40 @@ function buildShim(TH) {
     "substitudeMacros"
   ];
 
+  const varHelpers = new Set([
+    "getVariables",
+    "updateVariablesWith",
+    "deleteVariable",
+    "insertOrAssignVariables"
+  ]);
+
   const shim = {};
   for (const name of fnNames) {
-    if (typeof TH?.[name] === "function") {
-      shim[name] = TH[name].bind(TH);
-    } else if (typeof globalThis[name] === "function") {
-      shim[name] = globalThis[name];
+    const rawFn = typeof TH?.[name] === "function"
+      ? TH[name].bind(TH)
+      : typeof globalThis[name] === "function"
+        ? globalThis[name]
+        : undefined;
+
+    if (varHelpers.has(name) && rawFn) {
+      shim[name] = (...args) => {
+        const nextArgs = [...args];
+        const optIdx = name === "getVariables" ? 0 : 1;
+        const opt = nextArgs[optIdx];
+        if (opt && typeof opt === "object" && opt.type === "script" && !opt.script_id) {
+          nextArgs[optIdx] = { ...opt, script_id: SCRIPT_ID };
+        }
+        try {
+          return rawFn(...nextArgs);
+        } catch (err) {
+          if (String(err?.message || err).includes("getScriptId")) {
+            return name === "getVariables" ? {} : undefined;
+          }
+          throw err;
+        }
+      };
     } else {
-      shim[name] = undefined;
+      shim[name] = rawFn;
     }
   }
 
@@ -75,20 +101,28 @@ function buildShim(TH) {
     }
   })();
 
+  const rawEventOn = shim.eventOn;
+  shim.eventOn = (eventName, handler) => {
+    if (typeof rawEventOn === "function") {
+      try {
+        return rawEventOn(eventName, handler);
+      } catch (err) {
+        if (!String(err?.message || err).includes("getScriptId")) throw err;
+      }
+    }
+    try {
+      const es = globalThis.SillyTavern?.getContext?.()?.eventSource;
+      if (es && typeof es.on === "function") {
+        return es.on(eventName, handler);
+      }
+    } catch {}
+    return undefined;
+  };
+
   shim.tavern_events = globalThis.tavern_events || TH?.tavern_events || stEvents || {};
   shim.getScriptId = () => SCRIPT_ID;
-  shim.appendInexistentScriptButtons =
-    typeof TH?.appendInexistentScriptButtons === "function"
-      ? TH.appendInexistentScriptButtons.bind(TH)
-      : typeof globalThis.appendInexistentScriptButtons === "function"
-        ? globalThis.appendInexistentScriptButtons
-        : () => {};
-  shim.getButtonEvent =
-    typeof TH?.getButtonEvent === "function"
-      ? TH.getButtonEvent.bind(TH)
-      : typeof globalThis.getButtonEvent === "function"
-        ? globalThis.getButtonEvent
-        : (name) => `npc_life_btn_${String(name || "")}`;
+  shim.appendInexistentScriptButtons = () => {};
+  shim.getButtonEvent = (name) => `npc_life_btn_${String(name || "")}`;
   shim.EjsTemplate = globalThis.EjsTemplate || TH?.EjsTemplate || {};
 
   const jq = globalThis.jQuery || globalThis.$;
