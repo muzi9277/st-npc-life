@@ -17,6 +17,11 @@
 
 - 作者推送新版本后，打开酒馆 **扩展 → 管理扩展**，点击本扩展旁的 **更新（Update）** 即可一键升级，或在扩展设置中开启自动更新。
 
+## v3.6.0-beta.6 变更
+
+- **彻底切断主模型兜底（死活不碰主模型）**：移除了 `Pn()` 里所有回退到 `TavernHelper.generate` / `generateQuietPrompt` / 裸 `generateRaw` 的通道——未检测到副 API 配置时直接跳过后台辅助请求，绝不偷扣主模型额度。
+- **修复隔离请求携带 150K 历史记录的隐患**：`nlCallSubApi` 传入非空 `ordered_prompts` 与 `max_chat_history: 0`，避免 `generateRaw` 因空数组回退加载整段正史上下文；`nlReadSubApiConfig` 同时兼容 `host.vars`、内存设置 store 与 `localStorage`。
+
 ## v3.6.0-beta.5 变更
 
 - **新增「精简快跑提示词」（默认开启，省 85%+ 输入 Token）**：将彼方原本约 1.5 万字的系统规则精简为约 800 字高信噪比规则（完整保留「身份锚点」、防全知、别名、核心增量字段与所有「自定义段 / 破限」插槽），大幅加快 Flash / DeepSeek 响应速度并降低截断报错；需要原版细则可在「活世界」面板一键关掉切换。
