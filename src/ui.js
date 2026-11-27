@@ -706,34 +706,31 @@ export function mountUi(host, engine) {
     return `
       <div class="nl4-section">
         <div class="nl4-box">
-          <div class="nl4-setting-list">
-            ${renderToggleRow({ title: "启用活世界引擎", desc: "开启防全知知情账本、本地传闻扩散与主动偶遇队列", attrs: 'data-lw="enabled"', checked: lw.enabled })}
-            ${renderToggleRow({ title: "启用轻量「世界近况」（0 额外请求）", desc: "记录封城/天灾/祭典等公共大事并同轮喂给幕后 NPC，保持大环境连贯", attrs: 'data-lw="worldTrendsEnabled"', checked: lw.worldTrendsEnabled !== false })}
-            ${renderToggleRow({ title: "启用命运钟与真实死亡后果", desc: "按剧情天数推进危机倒计时；死亡自动生成现场遗留痕迹并严防诈尸", attrs: 'data-lw="fateClocks"', checked: lw.fateClocks })}
-            ${renderToggleRow({ title: "正文危机自动挂命运钟（0 额外请求）", desc: "正文出现中毒/囚禁断粮/重伤垂危等限时危机时，由主更新顺带挂钟", attrs: 'data-lw="autoCreateClocksFromProse"', checked: lw.autoCreateClocksFromProse !== false })}
-            ${renderToggleRow({ title: "上帝视角（关闭防剧透遮罩）", desc: "开启后直接在面板看到未揭晓的死亡与变故；关闭则等主角亲临现场揭晓", attrs: 'data-lw="godView"', checked: lw.godView })}
-            ${renderToggleRow({ title: "按角色隔离侧写（进阶防全知）", desc: "每轮按单个角色隔离上下文独立请求副 API（会增加本轮请求次数）", attrs: 'data-lw="isolatedNpcCalls"', checked: lw.isolatedNpcCalls })}
-            ${renderControlRow({ title: "隔离侧写单轮人数上限", desc: "限制开启隔离侧写时每轮最多更新多少个角色（1~6 人）", controlHtml: `<input class="nl4-input nl4-num" type="number" min="1" max="6" data-lw="isolatedMaxNpcs" value="${esc(lw.isolatedMaxNpcs)}">` })}
-            ${renderToggleRow({ title: "自动增量扫描世界书危机", desc: "按条目哈希增量提取世界书里的潜伏命运钟（默认关，可下方手动扫）", attrs: 'data-lw="autoScanWorldbook"', checked: lw.autoScanWorldbook })}
-          </div>
-        </div>
-
-        <div class="nl4-box">
           <div class="nl4-card-head">
             <h3 class="nl4-h3">🌍 世界近况（公共局势 · 最多 5 条活跃）</h3>
+            <div class="nl4-row-gap">
+              <span class="nl4-muted">上帝视角</span>
+              <label class="nl4-switch" title="临时切换是否显示未揭晓的死亡/变故剧透">
+                <input type="checkbox" data-lw="godView" ${lw.godView ? "checked" : ""}>
+                <span class="nl4-slider"></span>
+              </label>
+            </div>
           </div>
-          <div class="nl4-form-grid" style="margin:10px 0">
-            <label>影响区域<input class="nl4-input" id="nl4-tr-loc" placeholder="如：城北 / 全域"></label>
-            <label>传播范围
-              <select class="nl4-input" id="nl4-tr-scope">
-                <option value="公开">公开公告 / 街坊皆知</option>
-                <option value="传闻">坊间风声 / 传闻</option>
-              </select>
-            </label>
-            <label class="nl4-span-2">局势内容 *<input class="nl4-input" id="nl4-tr-content" placeholder="如：官府宣布城北宵禁三日，商旅进出受限"></label>
-          </div>
-          <div style="margin-bottom:8px"><button type="button" class="nl4-btn nl4-btn-primary nl4-btn-sm" data-act="add-trend">添加世界近况</button></div>
-          <div class="nl4-card-list">${trendsHtml}</div>
+          <div class="nl4-card-list" style="margin-top:8px">${trendsHtml}</div>
+          <details style="margin-top:8px">
+            <summary class="nl4-muted" style="cursor:pointer">＋ 手动添加世界近况</summary>
+            <div class="nl4-form-grid" style="margin:8px 0">
+              <label>影响区域<input class="nl4-input" id="nl4-tr-loc" placeholder="如：城北 / 全域"></label>
+              <label>传播范围
+                <select class="nl4-input" id="nl4-tr-scope">
+                  <option value="公开">公开公告 / 街坊皆知</option>
+                  <option value="传闻">坊间风声 / 传闻</option>
+                </select>
+              </label>
+              <label class="nl4-span-2">局势内容 *<input class="nl4-input" id="nl4-tr-content" placeholder="如：官府宣布城北宵禁三日，商旅进出受限"></label>
+            </div>
+            <button type="button" class="nl4-btn nl4-btn-primary nl4-btn-sm" data-act="add-trend">添加世界近况</button>
+          </details>
         </div>
 
         <div class="nl4-box">
@@ -741,21 +738,24 @@ export function mountUi(host, engine) {
             <h3 class="nl4-h3">⏳ 命运钟（死亡 / 危急 / 失踪 / 离开 / 背叛）</h3>
             <button type="button" class="nl4-btn nl4-btn-sm" data-act="scan-clocks" ${busyText ? "disabled" : ""}>扫描世界书危机</button>
           </div>
-          <div class="nl4-form-grid" style="margin:10px 0">
-            <label>角色名 *<input class="nl4-input" id="nl4-clk-npc" placeholder="如：林霜"></label>
-            <label>地点<input class="nl4-input" id="nl4-clk-loc" placeholder="如：地下室"></label>
-            <label>危机原因 *<input class="nl4-input" id="nl4-clk-title" placeholder="如：被囚禁断粮"></label>
-            <label>期限天数<input class="nl4-input" id="nl4-clk-days" type="number" min="1" value="14"></label>
-            <label>到期后果
-              <select class="nl4-input" id="nl4-clk-outcome">
-                ${Object.entries(CLOCK_OUTCOMES).map(([k, v]) => `<option value="${k}">${v.icon} ${v.label}</option>`).join("")}
-              </select>
-            </label>
-            <div style="display:flex;align-items:flex-end">
-              <button type="button" class="nl4-btn nl4-btn-primary nl4-btn-sm" data-act="add-clock">添加命运钟</button>
+          <div class="nl4-card-list" style="margin-top:8px">${clocksHtml}</div>
+          <details style="margin-top:8px">
+            <summary class="nl4-muted" style="cursor:pointer">＋ 手动添加命运钟</summary>
+            <div class="nl4-form-grid" style="margin:8px 0">
+              <label>角色名 *<input class="nl4-input" id="nl4-clk-npc" placeholder="如：林霜"></label>
+              <label>地点<input class="nl4-input" id="nl4-clk-loc" placeholder="如：地下室"></label>
+              <label>危机原因 *<input class="nl4-input" id="nl4-clk-title" placeholder="如：被囚禁断粮"></label>
+              <label>期限天数<input class="nl4-input" id="nl4-clk-days" type="number" min="1" value="14"></label>
+              <label>到期后果
+                <select class="nl4-input" id="nl4-clk-outcome">
+                  ${Object.entries(CLOCK_OUTCOMES).map(([k, v]) => `<option value="${k}">${v.icon} ${v.label}</option>`).join("")}
+                </select>
+              </label>
+              <div style="display:flex;align-items:flex-end">
+                <button type="button" class="nl4-btn nl4-btn-primary nl4-btn-sm" data-act="add-clock">添加命运钟</button>
+              </div>
             </div>
-          </div>
-          <div class="nl4-card-list">${clocksHtml}</div>
+          </details>
         </div>
 
         <div class="nl4-grid-2">
@@ -901,6 +901,7 @@ export function mountUi(host, engine) {
   const renderSettingsTab = (settings) => {
     const wb = settings.worldbook;
     const cost = settings.cost;
+    const lw = settings.livingWorld;
     const logs = getDiagnosticLogs();
     const activeFields =
       wb.injectMode === "minimal" ? WB_PRESETS.minimal : wb.injectMode === "custom" ? wb.customFields : WB_PRESETS.full;
@@ -929,6 +930,19 @@ export function mountUi(host, engine) {
             ${renderToggleRow({ title: "启用 NPC Life 后台引擎", desc: "总开关；关闭后不会自动请求副 API 或向主模型注入提示词", attrs: 'data-setting="enabled"', checked: settings.enabled })}
             ${renderToggleRow({ title: "AI 回复后自动更新角色", desc: "每轮新剧情结束后自动用副 API 推进在场与幕后角色状态", attrs: 'data-setting="autoUpdate"', checked: settings.autoUpdate })}
             ${renderToggleRow({ title: "自动识别并建档新 NPC", desc: "关闭后仅更新已追踪名单中的角色，不再为新出场人物建卡", attrs: 'data-setting="autoTrack"', checked: settings.autoTrack })}
+          </div>
+        </div>
+
+        <div class="nl4-box">
+          <h3 class="nl4-h3">🌍 活世界与命运钟开关</h3>
+          <div class="nl4-setting-list" style="margin-top:6px">
+            ${renderToggleRow({ title: "启用活世界引擎", desc: "开启防全知知情账本、本地传闻扩散与主动偶遇队列", attrs: 'data-lw="enabled"', checked: lw.enabled })}
+            ${renderToggleRow({ title: "启用轻量「世界近况」（0 额外请求）", desc: "记录封城/天灾/祭典等公共大事并同轮喂给幕后 NPC，保持大环境连贯", attrs: 'data-lw="worldTrendsEnabled"', checked: lw.worldTrendsEnabled !== false })}
+            ${renderToggleRow({ title: "启用命运钟与真实死亡后果", desc: "按剧情天数推进危机倒计时；死亡自动生成现场遗留痕迹并严防诈尸", attrs: 'data-lw="fateClocks"', checked: lw.fateClocks })}
+            ${renderToggleRow({ title: "正文危机自动挂命运钟（0 额外请求）", desc: "正文出现中毒/囚禁断粮/重伤垂危等限时危机时，由主更新顺带挂钟", attrs: 'data-lw="autoCreateClocksFromProse"', checked: lw.autoCreateClocksFromProse !== false })}
+            ${renderToggleRow({ title: "按角色隔离侧写（进阶防全知）", desc: "每轮按单个角色隔离上下文独立请求副 API（会增加本轮请求次数）", attrs: 'data-lw="isolatedNpcCalls"', checked: lw.isolatedNpcCalls })}
+            ${renderControlRow({ title: "隔离侧写单轮人数上限", desc: "限制开启隔离侧写时每轮最多更新多少个角色（1~6 人）", controlHtml: `<input class="nl4-input nl4-num" type="number" min="1" max="6" data-lw="isolatedMaxNpcs" value="${esc(lw.isolatedMaxNpcs)}">` })}
+            ${renderToggleRow({ title: "自动增量扫描世界书危机", desc: "按条目哈希增量提取世界书里的潜伏命运钟（默认关，可去活世界页手动扫）", attrs: 'data-lw="autoScanWorldbook"', checked: lw.autoScanWorldbook })}
           </div>
         </div>
 

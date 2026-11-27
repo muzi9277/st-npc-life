@@ -1,4 +1,4 @@
-export const VERSION = "4.0.0-beta.4";
+export const VERSION = "4.0.0-beta.5";
 export const PLUGIN_NAME = "NPC Life · 活世界";
 
 // Brand-new independent storage keys (zero collision with legacy Bifa)
