@@ -6,6 +6,7 @@ import {
   WB_PRESETS
 } from "./constants.js";
 import {
+  fetchModelList,
   getDiagnosticLogs,
   getLastTokenStats,
   isSubApiConfigured,
@@ -107,6 +108,7 @@ export function mountUi(host, engine) {
   let selectedNpc = null;
   let editingNpc = null;
   let busyText = "";
+  let fetchedModels = [];
   let theme = readJsonLS(THEME_KEY, "dark") === "light" ? "light" : "dark";
 
   let root = document.getElementById("nl4-root");
@@ -823,9 +825,27 @@ export function mountUi(host, engine) {
               <input class="nl4-input" data-api="apiurl" value="${esc(api.apiurl)}" placeholder="https://.../v1">
             </label>
             <label>API Key<input class="nl4-input" type="password" data-api="key" value="${esc(api.key)}" placeholder="sk-..."></label>
-            <label>模型名称 *<input class="nl4-input" data-api="model" value="${esc(api.model)}" placeholder="如：deepseek-chat / gemini-2.5-flash"></label>
+            <label>模型名称 *
+              <div class="nl4-row-gap" style="flex-wrap:nowrap">
+                <input class="nl4-input" list="nl4-model-datalist" data-api="model" value="${esc(api.model)}" placeholder="如：deepseek-chat / gemini-2.5-flash">
+                <button type="button" class="nl4-btn nl4-btn-sm" style="white-space:nowrap" data-act="fetch-models" ${busyText ? "disabled" : ""}>获取模型</button>
+              </div>
+              <datalist id="nl4-model-datalist">
+                ${fetchedModels.map((m) => `<option value="${esc(m)}"></option>`).join("")}
+              </datalist>
+            </label>
+            ${
+              fetchedModels.length
+                ? `<label class="nl4-span-2">从已获取的模型列表快速选择（共 ${fetchedModels.length} 个）
+                    <select class="nl4-input" data-api="model">
+                      <option value="">-- 请选择模型 --</option>
+                      ${fetchedModels.map((m) => `<option value="${esc(m)}" ${api.model === m ? "selected" : ""}>${esc(m)}</option>`).join("")}
+                    </select>
+                  </label>`
+                : ""
+            }
             <label>温度<input class="nl4-input" type="number" step="0.1" min="0" max="2" data-api="temperature" value="${esc(api.temperature)}"></label>
-            <label>最大输出 Token<input class="nl4-input" type="number" min="256" max="16384" step="256" data-api="maxTokens" value="${esc(api.maxTokens)}"></label>
+            <label>最大输出 Token（多角色建议 ≥ 4096）<input class="nl4-input" type="number" min="512" max="32768" step="512" data-api="maxTokens" value="${esc(api.maxTokens)}"></label>
           </div>
           <div class="nl4-setting-list" style="margin-top:8px">
             ${renderControlRow({ title: "请求超时秒数", desc: "超过设定秒数自动中止，避免后台卡死（15~240 秒）", controlHtml: `<input class="nl4-input nl4-num" type="number" min="15" max="240" data-api="timeoutSec" value="${esc(api.timeoutSec)}">` })}
@@ -1045,8 +1065,13 @@ export function mountUi(host, engine) {
       render();
       try {
         const res = await engine.runUpdateTurn({ force: true, bypassBudget: true });
-        if (res.ok) host.toast.success(`更新完成（变动 ${res.changedNpcs.length} 人，约 ${res.tokens} Token）`);
-        else host.toast.warn(res.error || res.reason || "本次未更新");
+        if (res.ok) {
+          if (res.truncated) {
+            host.toast.warn(`更新完成（变动 ${res.changedNpcs.length} 人），但输出被 maxTokens 截断，请在「接口」调大最大输出 Token`);
+          } else {
+            host.toast.success(`更新完成（变动 ${res.changedNpcs.length} 人，约 ${res.tokens} Token）`);
+          }
+        } else host.toast.warn(res.error || res.reason || "本次未更新");
       } finally {
         busyText = "";
         render();
@@ -1199,6 +1224,24 @@ export function mountUi(host, engine) {
       const w = engine.getChatState().world;
       w.clocks = w.clocks.filter((c) => c.id !== actBtn.dataset.id);
       await engine.persistState(null, false);
+      return;
+    }
+
+    if (act === "fetch-models") {
+      busyText = "拉取中…";
+      render();
+      try {
+        const res = await fetchModelList(host, engine.getSettings());
+        if (res.ok) {
+          fetchedModels = res.models;
+          host.toast.success(`已获取 ${res.models.length} 个模型，可在下拉框直接选择`);
+        } else {
+          host.toast.warn(`获取模型失败：${res.error}`);
+        }
+      } finally {
+        busyText = "";
+        render();
+      }
       return;
     }
 

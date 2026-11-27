@@ -75,6 +75,14 @@ function normalizeEndpoint(rawUrl) {
   return `${u}/chat/completions`;
 }
 
+function normalizeModelsEndpoint(rawUrl) {
+  const u = String(rawUrl || "").trim().replace(/\/+$/, "");
+  if (!u) return "";
+  if (/\/models$/i.test(u)) return u;
+  if (/\/chat\/completions$/i.test(u)) return u.replace(/\/chat\/completions$/i, "/models");
+  return `${u}/models`;
+}
+
 function isMaxTokensConflict(msg) {
   const s = String(msg || "").toLowerCase();
   return (
@@ -129,11 +137,13 @@ async function fetchDirectOnce(api, messages, maxTokens, signal) {
     throw err;
   }
 
-  const content = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? "";
+  const choice = data?.choices?.[0];
+  const content = choice?.message?.content ?? choice?.text ?? "";
+  const finishReason = String(choice?.finish_reason || "");
   const str = String(content || "").trim();
   if (!str) throw new Error("副 API 返回内容为空");
   if (isErrorTextPayload(str)) throw new Error(`接口返回错误: ${str}`);
-  return str;
+  return { text: str, truncated: finishReason === "length" };
 }
 
 async function callViaTavernRelayOnce(host, api, messages, maxTokens) {
@@ -165,7 +175,7 @@ async function callViaTavernRelayOnce(host, api, messages, maxTokens) {
   const str = String(raw || "").trim();
   if (!str) throw new Error("副 API 转发返回为空");
   if (isErrorTextPayload(str)) throw new Error(`接口返回错误: ${str}`);
-  return str;
+  return { text: str, truncated: false };
 }
 
 /**
@@ -202,7 +212,7 @@ export async function callSubApi(host, settings, messages, opts = {}) {
   const api = settings.api;
   const route = api.direct !== false ? "直连" : "酒馆转发";
   const timeoutMs = Math.max(15, Math.min(240, Number(api.timeoutSec) || 90)) * 1000;
-  let maxTokens = opts.maxTokens != null ? opts.maxTokens : Number(api.maxTokens) || 2048;
+  let maxTokens = opts.maxTokens != null ? opts.maxTokens : Number(api.maxTokens) || 4096;
 
   const execOnce = async (mt) => {
     const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
@@ -218,23 +228,25 @@ export async function callSubApi(host, settings, messages, opts = {}) {
   };
 
   try {
-    let text;
+    let result;
     try {
-      text = await execOnce(maxTokens);
+      result = await execOnce(maxTokens);
     } catch (err) {
       const msg = String(err?.message || err);
       if (isMaxTokensConflict(msg)) {
-        text = await execOnce(null);
+        result = await execOnce(null);
       } else if (isMaxTokensRangeErr(msg) && maxTokens > 4096) {
-        text = await execOnce(4096);
+        result = await execOnce(4096);
       } else if (err?.status === 429 && !opts.noRetry429) {
         await new Promise((r) => setTimeout(r, 1200));
-        text = await execOnce(maxTokens);
+        result = await execOnce(maxTokens);
       } else {
         throw err;
       }
     }
 
+    const text = result.text;
+    const truncated = Boolean(result.truncated);
     const durationMs = Date.now() - started;
     recordDiagnostic({
       kind,
@@ -246,9 +258,11 @@ export async function callSubApi(host, settings, messages, opts = {}) {
       replyChars: opts.replyChars || 0,
       model: api.model,
       route,
-      detail: `成功（返回 ${text.length} 字）`
+      detail: truncated
+        ? `成功但输出被截断（返回 ${text.length} 字，建议在「接口」调大最大输出 Token）`
+        : `成功（返回 ${text.length} 字）`
     });
-    return { ok: true, text, tokens, durationMs, route };
+    return { ok: true, text, truncated, tokens, durationMs, route };
   } catch (err) {
     const durationMs = Date.now() - started;
     const reason = err?.name === "AbortError" ? `请求超时（>${Math.round(timeoutMs / 1000)}s）` : String(err?.message || err);
@@ -278,6 +292,75 @@ export async function testSubApiConnection(host, settings) {
     ],
     { kind: "test", bypassBudget: true, maxTokens: 64, noRetry429: true }
   );
+}
+
+/**
+ * Fetch available model IDs from GET {apiurl}/models (or TavernHelper.getModelList when relay mode is used).
+ */
+export async function fetchModelList(host, settings) {
+  const api = settings?.api || {};
+  const rawUrl = String(api.apiurl || "").trim();
+  if (!rawUrl) {
+    return { ok: false, models: [], error: "请先填写 API 地址" };
+  }
+
+  // Try TavernHelper.getModelList first when using relay mode
+  if (api.direct === false) {
+    const th = host?.getTH?.();
+    if (th && typeof th.getModelList === "function") {
+      try {
+        const list = await th.getModelList({ apiurl: rawUrl, key: String(api.key || "").trim() });
+        if (Array.isArray(list) && list.length) {
+          const ids = list
+            .map((x) => (typeof x === "string" ? x : x?.id || x?.name || ""))
+            .filter(Boolean)
+            .sort();
+          if (ids.length) return { ok: true, models: Array.from(new Set(ids)) };
+        }
+      } catch {}
+    }
+  }
+
+  const url = normalizeModelsEndpoint(rawUrl);
+  const headers = {};
+  if (api.key && String(api.key).trim()) {
+    headers.Authorization = `Bearer ${String(api.key).trim()}`;
+  }
+
+  try {
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), 20000) : null;
+    try {
+      const res = await fetch(url, { method: "GET", headers, signal: controller?.signal });
+      const text = await res.text();
+      if (!res.ok) {
+        return { ok: false, models: [], error: `HTTP ${res.status}: ${text.slice(0, 160)}` };
+      }
+      const data = JSON.parse(text);
+      const rawList = Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data?.models)
+          ? data.models
+          : Array.isArray(data)
+            ? data
+            : [];
+      const ids = rawList
+        .map((m) => (typeof m === "string" ? m : String(m?.id || m?.name || "").replace(/^models\//, "")))
+        .filter(Boolean)
+        .sort();
+      const unique = Array.from(new Set(ids));
+      if (!unique.length) return { ok: false, models: [], error: "接口返回的模型列表为空" };
+      return { ok: true, models: unique };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      models: [],
+      error: err?.name === "AbortError" ? "获取模型列表超时" : String(err?.message || err)
+    };
+  }
 }
 
 /**

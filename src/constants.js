@@ -1,4 +1,4 @@
-export const VERSION = "4.0.0-beta.2";
+export const VERSION = "4.0.0-beta.3";
 export const PLUGIN_NAME = "NPC Life · 活世界";
 
 // Brand-new independent storage keys (zero collision with legacy Bifa)
@@ -49,13 +49,9 @@ export const CLOCK_OUTCOMES = {
 };
 
 export const GENERIC_TITLES = new Set([
-  "老板", "店主", "店员", "掌柜", "小二", "伙计", "服务员", "侍者", "侍女", "女仆", "管家",
-  "医生", "大夫", "护士", "老师", "教授", "校长", "学生", "同学", "学长", "学姐", "学弟", "学妹",
-  "警察", "警官", "保安", "守卫", "卫兵", "士兵", "队长", "将军", "长官", "老板娘", "房东",
-  "司机", "车夫", "船夫", "路人", "行人", "市民", "村民", "邻居", "陌生人", "男人", "女人",
-  "少年", "少女", "老人", "老头", "老太", "小孩", "孩子", "女孩", "男孩", "黑衣人", "神秘人",
-  "父亲", "母亲", "爸爸", "妈妈", "哥哥", "姐姐", "弟弟", "妹妹", "叔叔", "阿姨", "爷爷", "奶奶",
-  "上司", "下属", "同事", "秘书", "助理", "保镖", "刺客", "杀手", "盗贼", "商人", "摊主"
+  "店员", "小二", "伙计", "服务员", "侍者", "保安", "守卫", "卫兵", "士兵",
+  "司机", "车夫", "船夫", "路人", "行人", "市民", "村民", "陌生人", "男人", "女人",
+  "老人", "老头", "老太", "小孩", "黑衣人", "神秘人", "摊主", "老板"
 ]);
 
 export function createDefaultSettings() {
@@ -75,7 +71,7 @@ export function createDefaultSettings() {
       model: "",
       direct: true,
       temperature: 0.5,
-      maxTokens: 2048,
+      maxTokens: 4096,
       timeoutSec: 90
     },
 

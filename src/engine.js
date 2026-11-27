@@ -44,8 +44,8 @@ export const COMPACT_SYSTEM_PROMPT = `你是「NPC Life · 活世界」的后台
 2. 主角去中心化：NPC 为自己而活，绝不围绕主角旋转或刻意迎合主角。即使关系紧密，其内心与日程也必须保留自己的事业、烦恼、人际圈与独立追求。
 3. 时间推进与反雷同：核心三字段「当前在做 / 当前状态 / 位置」每轮必返，且必须与最新正文时刻一致、真正往前推进（已有计划/目标就落到行动进展上，否则用生活流体现推移，严禁换近义词原地踏步）。
 4. 身份锚点与一致性：首次建卡必填「身份锚点」（身份/性格底色/典型一天作息与常来往的人），已有锚点保持稳定；具体名词不可泛化（旧卡写“玩偶/城北药铺”等具体物件地点，严禁改写为“礼物/某处”）。
-5. 角色筛选与别名：只追踪有明确姓名的重要角色；主角、无名路人、泛称店员/护卫一律不建档。昵称/曾用名合并入原正式名下并写入 "别名" 数组。
-6. 增量返回：除核心三字段外，其余字段仅在有实质变化时返回；仅确实死亡的已建档角色列入 "移除NPC"（远行/失联绝不移除）。
+5. 角色筛选与别名（切勿遗漏在场角色）：凡是在【最新回复】中实际在场互动、对话或有明确戏份的重要角色（无论有正式姓名，还是如“姐姐/管家/老师”这类固定核心称谓），都要**全部识别并平铺建档，严禁漏掉任何一位在场重要角色**！只排除主角本人与无台词纯背景路人/店员。昵称/曾用名合并入原正式名下并写入 "别名" 数组。
+6. 增量返回与精炼输出：除核心三字段外，其余字段仅在有实质变化时返回，单字段控制在 1 句话内以防多角色输出被截断；仅确实死亡的已建档角色列入 "移除NPC"（远行/失联绝不移除）。
 
 输出 JSON 结构：
 {
@@ -304,10 +304,33 @@ export function mergeUpdateResponse(chatState, parsedData, settings, playerName 
   const addedNpcs = [];
   const cleanPlayer = String(playerName || "").trim();
 
+  // Unwrap accidental container keys (e.g. {"NPC": {"A": {...}, "B": {...}}} or {"在场NPC": [{name:"A",...}]})
+  const wrapperKeys = new Set(["NPC", "npcs", "NPCs", "角色", "在场NPC", "新建NPC", "更新NPC", "characters"]);
+  const flatCandidates = [];
   for (const [rawKey, val] of Object.entries(parsedData)) {
-    if (metaKeys.has(rawKey) || !val || typeof val !== "object" || Array.isArray(val)) continue;
+    if (metaKeys.has(rawKey) || !val || typeof val !== "object") continue;
+    if (wrapperKeys.has(rawKey)) {
+      if (Array.isArray(val)) {
+        for (const item of val) {
+          if (!item || typeof item !== "object") continue;
+          const nm = String(item.name || item["名字"] || item["角色名"] || item["姓名"] || "").trim();
+          if (nm) flatCandidates.push([nm, item]);
+        }
+      } else {
+        for (const [subK, subV] of Object.entries(val)) {
+          if (subV && typeof subV === "object" && !Array.isArray(subV)) {
+            flatCandidates.push([subK, subV]);
+          }
+        }
+      }
+      continue;
+    }
+    if (!Array.isArray(val)) flatCandidates.push([rawKey, val]);
+  }
+
+  for (const [rawKey, val] of flatCandidates) {
     const key = String(rawKey || "").trim();
-    if (!key || key.length < 2) continue;
+    if (!key) continue;
     if (cleanPlayer && key === cleanPlayer) continue;
     if (GENERIC_TITLES.has(key)) continue;
 
@@ -657,6 +680,7 @@ export function createNpcLifeEngine(host) {
           floorId,
           changedNpcs: merged.changedNpcs,
           addedNpcs: merged.addedNpcs,
+          truncated: Boolean(lastRes?.truncated),
           tokens: lastRes?.tokens || 0
         };
       } finally {
