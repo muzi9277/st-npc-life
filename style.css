@@ -73,7 +73,7 @@
   box-sizing: border-box;
 }
 
-/* ===== GPU-Smooth Draggable Floating Globe Orb ===== */
+/* ===== GPU-Smooth Draggable Floating Globe Orb + Half-Hidden Edge Dock ===== */
 .nl4-orb {
   position: fixed;
   z-index: 10040;
@@ -93,17 +93,41 @@
   transition:
     left 0.24s cubic-bezier(0.22, 1, 0.36, 1),
     top 0.24s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.15s ease,
+    transform 0.22s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.2s ease,
+    border-radius 0.2s ease,
     box-shadow 0.15s ease;
+}
+
+/* Generous invisible thumb hit area when tucked at edge */
+.nl4-orb::before {
+  content: "";
+  position: absolute;
+  inset: -8px;
+}
+
+.nl4-orb.docked-right:not(.dragging):not(:hover):not(.busy) {
+  transform: translateX(52%);
+  opacity: 0.68;
+  border-radius: 50% 0 0 50%;
+}
+
+.nl4-orb.docked-left:not(.dragging):not(:hover):not(.busy) {
+  transform: translateX(-52%);
+  opacity: 0.68;
+  border-radius: 0 50% 50% 0;
 }
 
 .nl4-orb:hover {
   transform: scale(1.06);
+  opacity: 1;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.55), 0 0 18px rgba(229, 168, 87, 0.45);
 }
 
 .nl4-orb.dragging {
   transition: none !important;
+  opacity: 1 !important;
+  border-radius: 50% !important;
   cursor: grabbing;
   box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6), 0 0 22px rgba(229, 168, 87, 0.55);
 }
@@ -872,68 +896,245 @@
   color: var(--nl4-muted);
 }
 
-@media (max-width: 760px) {
-  .nl4-panel {
-    left: 2vw !important;
-    top: 2dvh !important;
-    width: 96vw !important;
-    height: 94dvh !important;
-    min-width: 0;
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr) auto;
-    grid-template-areas:
-      "bar"
-      "tabs"
-      "view"
-      "status";
-  }
-  .nl4-panel::before {
-    grid-area: 1 / 1 / 5 / 2;
-  }
-  .nl4-nav {
-    flex-direction: row;
-    padding: 0 12px;
-    gap: 4px;
-    border-bottom: 1px solid var(--nl4-line);
-    z-index: 3;
-    overflow-x: auto;
-  }
-  .nl4-nav-item,
-  .nl4-nav-item.active {
-    width: auto;
-    flex-direction: row;
-    padding: 8px 12px;
-    border-radius: 8px 8px 0 0;
-    transform: none;
-    box-shadow: none;
-  }
-  .nl4-nav-label {
-    writing-mode: horizontal-tb;
-    letter-spacing: 1px;
-  }
-  .nl4-nav-item.active::after {
-    display: none;
-  }
-  .nl4-npc-split,
-  .nl4-form-grid,
-  .nl4-grid-2 {
-    grid-template-columns: 1fr;
-  }
-  .nl4-npc-roster {
-    border-right: 0;
-    border-bottom: 1px solid var(--nl4-line);
-    padding-right: 0;
-    padding-bottom: 10px;
-    max-height: 180px;
-    overflow-y: auto;
-  }
-  .nl4-span-2 {
-    grid-column: span 1;
-  }
-  .nl4-resize {
-    display: none;
-  }
-  .nl4-select-sm {
-    width: 165px;
-  }
+/* ===== Dedicated Mobile UI: Compact Header +「人 | 信息」Side-by-Side Split View ===== */
+.nl4-root[data-layout="mobile"] .nl4-panel {
+  left: 2vw !important;
+  top: 2dvh !important;
+  width: 96vw !important;
+  height: 95dvh !important;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "bar"
+    "tabs"
+    "view"
+    "status";
+}
+
+.nl4-root[data-layout="mobile"] .nl4-panel::before {
+  grid-area: 1 / 1 / 5 / 2;
+  border-radius: 14px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-topbar {
+  padding: 9px 12px;
+  gap: 8px;
+  cursor: default;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-brand-globe {
+  width: 24px;
+  height: 24px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-brand-globe svg {
+  width: 16px;
+  height: 16px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-title {
+  font-size: 14.5px;
+  white-space: nowrap;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-subtitle {
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 44vw;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-top-actions {
+  flex-wrap: nowrap;
+  gap: 5px;
+  flex: none;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-desktop-only {
+  display: none !important;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-nav {
+  flex-direction: row;
+  padding: 0 8px;
+  gap: 4px;
+  border-bottom: 1px solid var(--nl4-line);
+  z-index: 3;
+  overflow-x: auto;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-nav-item,
+.nl4-root[data-layout="mobile"] .nl4-nav-item.active {
+  flex: 1;
+  width: auto;
+  flex-direction: row;
+  justify-content: center;
+  padding: 8px 4px;
+  border-radius: 8px 8px 0 0;
+  transform: none;
+  box-shadow: none;
+  font-size: 13px;
+  gap: 4px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-nav-label {
+  writing-mode: horizontal-tb;
+  letter-spacing: 0.5px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-nav-item.active {
+  border-bottom: 2px solid var(--nl4-accent);
+}
+
+.nl4-root[data-layout="mobile"] .nl4-nav-item.active::after {
+  display: none;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-main {
+  padding: 10px;
+}
+
+/* Mobile Characters Tab = Pure Left「人」Rail + Right「信息」Card */
+.nl4-root[data-layout="mobile"] .nl4-main.nl4-main-npcs {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-main-npcs .nl4-section {
+  flex: 1;
+  min-height: 0;
+  gap: 0;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-npc-split {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 0;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-npc-roster {
+  border-right: 1px solid var(--nl4-line);
+  border-bottom: 0;
+  padding: 8px 5px 12px 6px;
+  overflow-y: auto;
+  max-height: none;
+  background: rgba(0, 0, 0, 0.14);
+  gap: 5px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-roster-item {
+  padding: 8px 5px;
+  border-radius: 8px;
+  align-items: center;
+  text-align: center;
+  gap: 3px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-roster-top {
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-roster-name {
+  font-size: 12.5px;
+  line-height: 1.25;
+  word-break: break-all;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-roster-sub {
+  display: none;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-roster-item .nl4-badge {
+  font-size: 9.5px;
+  padding: 0 4px;
+  line-height: 14px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-roster-group > summary {
+  font-size: 11px;
+  text-align: center;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-npc-detail {
+  overflow-y: auto;
+  padding: 8px 10px 14px;
+  gap: 8px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-npc-detail > .nl4-box {
+  padding: 10px 11px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-dl {
+  grid-template-columns: 1fr;
+  gap: 2px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-dl dt {
+  font-size: 11px;
+  margin-top: 7px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-dl dd {
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-add-drawer {
+  border-top: 1px solid var(--nl4-line);
+  border-radius: 0;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  padding: 8px 12px;
+  flex: none;
+}
+
+.nl4-root[data-layout="mobile"] #nl4-roster-search {
+  padding: 4px 5px;
+  font-size: 11px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-form-grid,
+.nl4-root[data-layout="mobile"] .nl4-grid-2 {
+  grid-template-columns: 1fr;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-span-2 {
+  grid-column: span 1;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-resize {
+  display: none;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-foot {
+  padding: 6px 12px;
+  font-size: 11px;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  gap: 8px;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-foot-item {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.nl4-root[data-layout="mobile"] .nl4-select-sm {
+  width: 150px;
 }
