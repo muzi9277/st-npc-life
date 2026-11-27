@@ -76,7 +76,7 @@
 /* ===== GPU-Smooth Draggable Floating Globe Orb + Half-Hidden Edge Dock ===== */
 .nl4-orb {
   position: fixed;
-  z-index: 10040;
+  z-index: 2147483000;
   width: 48px;
   height: 48px;
   padding: 0;
@@ -107,14 +107,14 @@
 }
 
 .nl4-orb.docked-right:not(.dragging):not(:hover):not(.busy) {
-  transform: translateX(52%);
-  opacity: 0.68;
+  transform: translateX(44%);
+  opacity: 0.82;
   border-radius: 50% 0 0 50%;
 }
 
 .nl4-orb.docked-left:not(.dragging):not(:hover):not(.busy) {
-  transform: translateX(-52%);
-  opacity: 0.68;
+  transform: translateX(-44%);
+  opacity: 0.82;
   border-radius: 0 50% 50% 0;
 }
 
@@ -170,7 +170,7 @@
 /* ===== Bifa-style GPU-Draggable Book-Ledger Floating Panel ===== */
 .nl4-panel {
   position: fixed;
-  z-index: 10050;
+  z-index: 2147483010;
   width: min(1040px, 94vw);
   height: min(720px, calc(100dvh - 56px));
   min-width: 560px;
@@ -894,6 +894,32 @@
   text-align: center;
   padding: 28px 12px;
   color: var(--nl4-muted);
+}
+
+.nl4-secret-mask {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px dashed var(--nl4-line-strong);
+  background: var(--nl4-accent-soft);
+  color: var(--nl4-accent-text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+}
+
+.nl4-secret-mask:hover {
+  border-color: var(--nl4-accent);
+  background: rgba(229, 168, 87, 0.22);
+}
+
+.nl4-peek-hide {
+  margin-left: 6px;
+  padding: 1px 7px;
+  font-size: 11px;
+  opacity: 0.85;
 }
 
 /* ===== Dedicated Mobile UI: Compact Header +「人 | 信息」Side-by-Side Split View ===== */

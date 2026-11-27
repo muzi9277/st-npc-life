@@ -3,7 +3,7 @@ import { createHostAdapter } from "./src/host.js";
 import { createNpcLifeEngine } from "./src/engine.js";
 import { mountUi } from "./src/ui.js";
 
-function waitForSillyTavern(timeoutMs = 15000, intervalMs = 200) {
+function waitForSillyTavern(timeoutMs = 60000, intervalMs = 250) {
   return new Promise((resolve) => {
     const started = Date.now();
     const tick = () => {
@@ -24,8 +24,36 @@ function waitForSillyTavern(timeoutMs = 15000, intervalMs = 200) {
   });
 }
 
-// Wait briefly for optional TavernHelper so legacy 3.6 migration & worldbook are ready at boot
-function waitBrieflyForTavernHelper(timeoutMs = 3500, intervalMs = 150) {
+function waitForBody(timeoutMs = 30000) {
+  if (typeof document === "undefined") return Promise.resolve(false);
+  if (document.body) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const done = (ok) => {
+      document.removeEventListener("DOMContentLoaded", onReady);
+      resolve(ok);
+    };
+    const onReady = () => {
+      if (document.body) done(true);
+    };
+    document.addEventListener("DOMContentLoaded", onReady, { once: true });
+    const tick = () => {
+      if (document.body) {
+        done(true);
+        return;
+      }
+      if (Date.now() - started >= timeoutMs) {
+        done(false);
+        return;
+      }
+      setTimeout(tick, 100);
+    };
+    tick();
+  });
+}
+
+// Wait asynchronously for optional TavernHelper without blocking initial UI mount
+function waitBrieflyForTavernHelper(timeoutMs = 8000, intervalMs = 200) {
   return new Promise((resolve) => {
     const started = Date.now();
     const tick = () => {
@@ -48,18 +76,25 @@ async function boot() {
   if (globalThis.__npcLifeV4Loaded) return;
   globalThis.__npcLifeV4Loaded = true;
 
-  const st = await waitForSillyTavern();
-  if (!st) {
-    console.warn("[NPCLife v4] 未检测到 SillyTavern 上下文，跳过初始化。");
-    return;
-  }
+  try {
+    const [st, hasBody] = await Promise.all([waitForSillyTavern(60000, 250), waitForBody(30000)]);
+    if (!st || !hasBody) {
+      globalThis.__npcLifeV4Loaded = false;
+      console.warn("[NPCLife v4] 未检测到 SillyTavern 上下文或 document.body，等待重试。");
+      return;
+    }
 
-  await waitBrieflyForTavernHelper();
+    const host = createHostAdapter();
+    const engine = createNpcLifeEngine(host);
+    // Mount floating orb & entry points IMMEDIATELY so mobile users never wait on TavernHelper
+    const ui = mountUi(host, engine);
+    const ev = host.events.types();
 
-  const host = createHostAdapter();
-  const engine = createNpcLifeEngine(host);
-  const ui = mountUi(host, engine);
-  const ev = host.events.types();
+    waitBrieflyForTavernHelper(8000, 200).then((th) => {
+      if (th) {
+        engine.tryLateLegacyMigration();
+      }
+    });
 
   let lastAutoTriggeredKey = "";
   let autoTimer = null;
@@ -117,9 +152,18 @@ async function boot() {
     await engine.handleRollback(Math.max(-1, lastId - 1));
   });
 
-  // 4. Switch chat -> reload independent v4 chat state
+  // 4. Switch chat & app ready -> reload independent v4 chat state & ensure orb/menu mounted
+  if (ev.APP_READY) {
+    host.events.on(ev.APP_READY, () => {
+      ui.ensureMounted?.();
+      engine.reloadForCurrentChat();
+      engine.handleBeforeGeneration().catch(() => {});
+    });
+  }
+
   host.events.on(ev.CHAT_CHANGED, () => {
     lastAutoTriggeredKey = "";
+    ui.ensureMounted?.();
     engine.reloadForCurrentChat();
     engine.handleBeforeGeneration().catch(() => {});
   });
@@ -133,6 +177,10 @@ async function boot() {
   };
 
   console.info(`[NPCLife v4] 已独立启动 v${VERSION}`);
+  } catch (err) {
+    globalThis.__npcLifeV4Loaded = false;
+    throw err;
+  }
 }
 
 if (typeof window !== "undefined") {
