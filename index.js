@@ -1,176 +1,84 @@
-const SCRIPT_ID = "923cea18-89d1-47c1-ac88-13555709f9dc";
+import { VERSION } from "./src/constants.js";
+import { createHostAdapter } from "./src/host.js";
+import { createNpcLifeEngine } from "./src/engine.js";
+import { mountUi } from "./src/ui.js";
 
-function notify(type, message) {
-  try {
-    const t = globalThis.toastr || window?.toastr;
-    if (t && typeof t[type] === "function") {
-      t[type](message, "NPC Life");
-      return;
-    }
-  } catch {}
-  const fn = type === "error" ? console.error : console.warn;
-  fn(`[NPCLife-Ext] ${message}`);
-}
-
-function waitForTavernHelper(timeoutMs = 15000, intervalMs = 250) {
+function waitForSillyTavern(timeoutMs = 15000, intervalMs = 200) {
   return new Promise((resolve) => {
     const started = Date.now();
-    const check = () => {
-      const th = globalThis.TavernHelper || window?.TavernHelper;
-      if (th && typeof th.getVariables === "function") {
-        resolve(th);
-        return;
-      }
+    const tick = () => {
+      try {
+        const ctx = globalThis.SillyTavern?.getContext?.();
+        if (ctx && ctx.eventSource) {
+          resolve(ctx);
+          return;
+        }
+      } catch {}
       if (Date.now() - started >= timeoutMs) {
         resolve(null);
         return;
       }
-      setTimeout(check, intervalMs);
+      setTimeout(tick, intervalMs);
     };
-    check();
+    tick();
   });
 }
 
-function buildShim(TH) {
-  const fnNames = [
-    "getVariables",
-    "updateVariablesWith",
-    "deleteVariable",
-    "insertOrAssignVariables",
-    "getChatMessages",
-    "getLastMessageId",
-    "eventOn",
-    "getCharData",
-    "getCurrentPersonaName",
-    "getPersona",
-    "getModelList",
-    "generateRaw",
-    "stopGenerationById",
-    "getCharWorldbookNames",
-    "getChatWorldbookName",
-    "getOrCreateChatWorldbook",
-    "getWorldbook",
-    "updateWorldbookWith",
-    "createWorldbookEntries",
-    "deleteWorldbookEntries",
-    "substitudeMacros"
-  ];
+async function boot() {
+  if (globalThis.__npcLifeV4Loaded) return;
+  globalThis.__npcLifeV4Loaded = true;
 
-  const varHelpers = new Set([
-    "getVariables",
-    "updateVariablesWith",
-    "deleteVariable",
-    "insertOrAssignVariables"
-  ]);
-
-  const shim = {};
-  for (const name of fnNames) {
-    const rawFn = typeof TH?.[name] === "function"
-      ? TH[name].bind(TH)
-      : typeof globalThis[name] === "function"
-        ? globalThis[name]
-        : undefined;
-
-    if (varHelpers.has(name) && rawFn) {
-      shim[name] = (...args) => {
-        const nextArgs = [...args];
-        const optIdx = name === "getVariables" ? 0 : 1;
-        const opt = nextArgs[optIdx];
-        if (opt && typeof opt === "object" && opt.type === "script" && !opt.script_id) {
-          nextArgs[optIdx] = { ...opt, script_id: SCRIPT_ID };
-        }
-        try {
-          return rawFn(...nextArgs);
-        } catch (err) {
-          if (String(err?.message || err).includes("getScriptId")) {
-            return name === "getVariables" ? {} : undefined;
-          }
-          throw err;
-        }
-      };
-    } else {
-      shim[name] = rawFn;
-    }
+  const st = await waitForSillyTavern();
+  if (!st) {
+    console.warn("[NPCLife v4] 未检测到 SillyTavern 上下文，跳过初始化。");
+    return;
   }
 
-  const stEvents = (() => {
-    try {
-      return globalThis.SillyTavern?.getContext?.()?.event_types;
-    } catch {
-      return null;
-    }
-  })();
+  const host = createHostAdapter();
+  const engine = createNpcLifeEngine(host);
+  const ui = mountUi(host, engine);
+  const ev = host.events.types();
 
-  const rawEventOn = shim.eventOn;
-  shim.eventOn = (eventName, handler) => {
-    if (typeof rawEventOn === "function") {
-      try {
-        return rawEventOn(eventName, handler);
-      } catch (err) {
-        if (!String(err?.message || err).includes("getScriptId")) throw err;
-      }
-    }
-    try {
-      const es = globalThis.SillyTavern?.getContext?.()?.eventSource;
-      if (es && typeof es.on === "function") {
-        return es.on(eventName, handler);
-      }
-    } catch {}
-    return undefined;
+  // 1. After AI replies -> run background NPC update if enabled & autoUpdate is on
+  host.events.on(ev.MESSAGE_RECEIVED, async () => {
+    const s = engine.getSettings();
+    if (!s.enabled || !s.autoUpdate) return;
+    await engine.runUpdateTurn({ force: false });
+  });
+
+  // 2. Before main generation -> single-flight prompt injection + optional isolated NPC side-updates
+  host.events.on(ev.GENERATION_STARTED, async () => {
+    await engine.handleBeforeGeneration();
+  });
+
+  // 3. Swipe / delete / edit -> unified rollback for BOTH NPC cards & living-world/clocks!
+  host.events.on(ev.MESSAGE_DELETED, async () => {
+    await engine.handleRollback();
+  });
+
+  host.events.on(ev.MESSAGE_SWIPED, async () => {
+    const lastId = host.chat.lastMessageId();
+    // Roll back to snapshot BEFORE the swiped floor so the new swipe starts cleanly
+    await engine.handleRollback(Math.max(-1, lastId - 1));
+  });
+
+  // 4. Switch chat -> reload independent v4 chat state (and auto-migrate legacy 3.6 chat if first visit)
+  host.events.on(ev.CHAT_CHANGED, () => {
+    engine.reloadForCurrentChat();
+    engine.handleBeforeGeneration().catch(() => {});
+  });
+
+  globalThis.__npcLifeV4 = {
+    version: VERSION,
+    host,
+    engine,
+    ui,
+    open: () => ui.open()
   };
 
-  shim.tavern_events = globalThis.tavern_events || TH?.tavern_events || stEvents || {};
-  shim.getScriptId = () => SCRIPT_ID;
-  shim.appendInexistentScriptButtons = () => {};
-  shim.getButtonEvent = (name) => `npc_life_btn_${String(name || "")}`;
-  shim.EjsTemplate = globalThis.EjsTemplate || TH?.EjsTemplate || {};
-
-  const jq = globalThis.jQuery || globalThis.$;
-  if (jq) {
-    shim.$ = jq;
-    shim.jQuery = jq;
-  }
-
-  return shim;
+  console.info(`[NPCLife v4] 已独立启动 v${VERSION}`);
 }
 
-async function boot() {
-  if (globalThis.__npcLifeExtLoaded) return;
-  globalThis.__npcLifeExtLoaded = true;
-
-  try {
-    const TH = await waitForTavernHelper(15000, 250);
-    if (!TH) {
-      notify("warning", "NPC Life 需要先安装并启用「酒馆助手（JS-Slash-Runner）」扩展。");
-      return;
-    }
-
-    if (globalThis.__npcLifeBifa) {
-      notify("warning", "检测到酒馆助手中已启用旧版 NPC Life 脚本，为防冲突已跳过扩展加载。请停用旧脚本后刷新页面。");
-      return;
-    }
-
-    const coreUrl = new URL("./npc-life-core.js", import.meta.url).href;
-    const res = await fetch(coreUrl);
-    if (!res.ok) {
-      throw new Error(`加载 npc-life-core.js 失败（HTTP ${res.status}）`);
-    }
-    const code = await res.text();
-
-    if (globalThis.__npcLifeBifa) {
-      notify("warning", "检测到酒馆助手中已启用旧版 NPC Life 脚本，为防冲突已跳过扩展加载。请停用旧脚本后刷新页面。");
-      return;
-    }
-
-    const shim = buildShim(TH);
-    const keys = Object.keys(shim);
-    const values = keys.map((k) => shim[k]);
-    const runner = new Function(...keys, code);
-    runner(...values);
-  } catch (err) {
-    console.error("[NPCLife-Ext] 启动失败:", err);
-    notify("error", `启动失败：${err?.message || String(err)}`);
-  }
+if (typeof window !== "undefined") {
+  boot().catch((err) => console.error("[NPCLife v4] 启动失败:", err));
 }
-
-boot();
