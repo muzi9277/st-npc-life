@@ -1,4 +1,4 @@
-export const VERSION = "4.0.0-beta.6";
+export const VERSION = "4.0.0-beta.7";
 export const PLUGIN_NAME = "NPC Life · 活世界";
 
 // Brand-new independent storage keys (zero collision with legacy Bifa)
@@ -64,6 +64,8 @@ export function createDefaultSettings() {
     minReplyChars: 120,
     recentReplyCount: 2,
     showFloatingButton: true,
+    orbAutoHideEdge: true,
+    uiLayout: "auto", // "auto" | "desktop" | "mobile"
 
     // Sub-API config (STRICTLY secondary API only, 0 main-model fallback)
     api: {

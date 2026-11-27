@@ -110,7 +110,16 @@ export function mountUi(host, engine) {
   let busyText = "";
   let fetchedModels = [];
   let rosterFilter = "";
+  let dockSide = "right";
+  let dockTimer = null;
+  let isOrbDragging = false;
   let theme = readJsonLS(THEME_KEY, "dark") === "light" ? "light" : "dark";
+
+  const resolveLayout = () => {
+    const pref = engine.getSettings().uiLayout || "auto";
+    if (pref === "mobile" || pref === "desktop") return pref;
+    return (window.innerWidth || 1280) <= 760 ? "mobile" : "desktop";
+  };
 
   let root = document.getElementById("nl4-root");
   if (root) root.remove();
@@ -118,6 +127,7 @@ export function mountUi(host, engine) {
   root.id = "nl4-root";
   root.className = "nl4-root";
   root.dataset.theme = theme;
+  root.dataset.layout = resolveLayout();
   document.body.appendChild(root);
 
   // 1. Draggable Floating Globe Orb
@@ -137,22 +147,66 @@ export function mountUi(host, engine) {
   panel.setAttribute("aria-label", PLUGIN_NAME);
   root.appendChild(panel);
 
+  const applyEdgeDockState = (side) => {
+    orb.classList.remove("docked-left", "docked-right");
+    const autoHide = engine.getSettings().orbAutoHideEdge !== false;
+    if (!autoHide || !side || isOrbDragging) return;
+    const vw = window.innerWidth || 1280;
+    const orbW = 48;
+    orb.style.left = side === "left" ? "0px" : `${Math.max(0, vw - orbW)}px`;
+    orb.classList.add(side === "left" ? "docked-left" : "docked-right");
+  };
+
+  const scheduleEdgeDock = (delayMs = 1200) => {
+    if (dockTimer) {
+      clearTimeout(dockTimer);
+      dockTimer = null;
+    }
+    if (engine.getSettings().orbAutoHideEdge === false || !dockSide) return;
+    dockTimer = setTimeout(() => {
+      dockTimer = null;
+      applyEdgeDockState(dockSide);
+    }, delayMs);
+  };
+
   const applyOrbPos = (pos, snapEdge = false) => {
     const vw = window.innerWidth || 1280;
     const vh = window.visualViewport?.height || window.innerHeight || 800;
-    const margin = 10;
+    const autoHide = engine.getSettings().orbAutoHideEdge !== false;
+    const margin = autoHide ? 0 : 10;
     const orbW = 48;
     const isMobile = vw <= 760;
     const defaultTop = isMobile ? Math.round(vh * 0.38) : vh - 128;
-    let left = clamp(pos?.left ?? vw - orbW - 14, margin, Math.max(margin, vw - orbW - margin));
-    const top = clamp(pos?.top ?? defaultTop, margin, Math.max(margin, vh - orbW - margin));
-    // Soft magnetic edge snap when released within 44px of left or right screen edge
-    if (snapEdge) {
-      if (left <= 44) left = margin;
-      else if (vw - (left + orbW) <= 44) left = vw - orbW - margin;
+    let left = clamp(pos?.left ?? (autoHide ? vw - orbW : vw - orbW - 14), margin, Math.max(margin, vw - orbW - margin));
+    const top = clamp(pos?.top ?? defaultTop, 10, Math.max(10, vh - orbW - 10));
+
+    if (autoHide) {
+      if (!pos || snapEdge) {
+        dockSide = left + orbW / 2 < vw / 2 ? "left" : "right";
+        left = dockSide === "left" ? 0 : Math.max(0, vw - orbW);
+      } else if (left <= 24) {
+        dockSide = "left";
+        left = 0;
+      } else if (left + orbW >= vw - 24) {
+        dockSide = "right";
+        left = Math.max(0, vw - orbW);
+      } else {
+        dockSide = "";
+      }
+      orb.style.left = `${Math.round(left)}px`;
+      orb.style.top = `${Math.round(top)}px`;
+      if (dockSide) applyEdgeDockState(dockSide);
+      else orb.classList.remove("docked-left", "docked-right");
+    } else {
+      dockSide = "";
+      orb.classList.remove("docked-left", "docked-right");
+      if (snapEdge) {
+        if (left <= 44) left = 10;
+        else if (vw - (left + orbW) <= 44) left = vw - orbW - 10;
+      }
+      orb.style.left = `${Math.round(left)}px`;
+      orb.style.top = `${Math.round(top)}px`;
     }
-    orb.style.left = `${Math.round(left)}px`;
-    orb.style.top = `${Math.round(top)}px`;
     return { left: Math.round(left), top: Math.round(top) };
   };
   applyOrbPos(readJsonLS(POS_ORB_KEY), false);
@@ -190,18 +244,23 @@ export function mountUi(host, engine) {
 
   // Keep orb & panel visible when viewport resizes, keyboard opens, or phone rotates
   const onViewportResize = () => {
-    const or = orb.getBoundingClientRect();
-    if (or.width > 0) applyOrbPos({ left: or.left, top: or.top }, false);
+    root.dataset.layout = resolveLayout();
+    const curLeft = parseFloat(orb.style.left);
+    const curTop = parseFloat(orb.style.top);
+    if (Number.isFinite(curLeft) && Number.isFinite(curTop)) {
+      applyOrbPos({ left: curLeft, top: curTop }, false);
+    }
     if (isOpen) {
       const pr = panel.getBoundingClientRect();
       applyWinRect({ left: pr.left, top: pr.top, width: pr.width, height: pr.height });
+      render();
     }
   };
   window.addEventListener("resize", onViewportResize);
   window.addEventListener("orientationchange", onViewportResize);
   window.visualViewport?.addEventListener("resize", onViewportResize);
 
-  // --- Silky GPU-Accelerated Orb Drag (rAF + translate3d + Soft Magnetic Edge Snap) ---
+  // --- Silky GPU-Accelerated Orb Drag (rAF + translate3d + Edge-Tucking) ---
   {
     let drag = null;
     let rafId = 0;
@@ -210,13 +269,22 @@ export function mountUi(host, engine) {
 
     orb.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 && e.pointerType === "mouse") return;
+      if (dockTimer) {
+        clearTimeout(dockTimer);
+        dockTimer = null;
+      }
+      isOrbDragging = true;
+      // Remove edge tuck before measuring origLeft so drag never jumps
+      orb.classList.remove("docked-left", "docked-right");
       const r = orb.getBoundingClientRect();
+      const origLeft = Number.isFinite(parseFloat(orb.style.left)) ? parseFloat(orb.style.left) : r.left;
+      const origTop = Number.isFinite(parseFloat(orb.style.top)) ? parseFloat(orb.style.top) : r.top;
       drag = {
         pointerId: e.pointerId,
         startX: e.clientX,
         startY: e.clientY,
-        origLeft: r.left,
-        origTop: r.top,
+        origLeft,
+        origTop,
         moved: false
       };
       pendingDx = 0;
@@ -234,9 +302,9 @@ export function mountUi(host, engine) {
       }
       if (!drag.moved) return;
       const vw = window.innerWidth || 1280;
-      const vh = window.innerHeight || 800;
-      pendingDx = clamp(drag.origLeft + dx, 8, vw - 56) - drag.origLeft;
-      pendingDy = clamp(drag.origTop + dy, 8, vh - 56) - drag.origTop;
+      const vh = window.visualViewport?.height || window.innerHeight || 800;
+      pendingDx = clamp(drag.origLeft + dx, 0, Math.max(0, vw - 48)) - drag.origLeft;
+      pendingDy = clamp(drag.origTop + dy, 8, Math.max(8, vh - 56)) - drag.origTop;
       if (!rafId) {
         rafId = requestAnimationFrame(() => {
           rafId = 0;
@@ -257,13 +325,16 @@ export function mountUi(host, engine) {
       const finalLeft = drag.origLeft + pendingDx;
       const finalTop = drag.origTop + pendingDy;
       drag = null;
+      isOrbDragging = false;
       orb.style.transform = "";
       orb.classList.remove("dragging");
       if (wasMoved) {
         const snapped = applyOrbPos({ left: finalLeft, top: finalTop }, true);
         writeJsonLS(POS_ORB_KEY, snapped);
+        scheduleEdgeDock(1100);
       } else {
         toggle();
+        scheduleEdgeDock(1400);
       }
     };
     orb.addEventListener("pointerup", finishOrb);
@@ -366,10 +437,21 @@ export function mountUi(host, engine) {
 
   const syncOrbStatus = () => {
     const s = engine.getSettings();
+    root.dataset.layout = resolveLayout();
     orb.classList.toggle("nl4-hidden", s.showFloatingButton === false);
     orb.classList.toggle("busy", Boolean(busyText));
     const dot = orb.querySelector("#nl4-orb-dot");
     if (dot) dot.classList.toggle("warn", !isSubApiConfigured(s));
+    if (s.orbAutoHideEdge === false) {
+      orb.classList.remove("docked-left", "docked-right");
+    } else if (!isOrbDragging) {
+      if (!dockSide) {
+        const vw = window.innerWidth || 1280;
+        const curLeft = parseFloat(orb.style.left);
+        dockSide = Number.isFinite(curLeft) && curLeft + 24 < vw / 2 ? "left" : "right";
+      }
+      applyEdgeDockState(dockSide);
+    }
   };
 
   const open = () => {
@@ -417,24 +499,27 @@ export function mountUi(host, engine) {
     }
   };
 
-  const renderTopbar = (_settings, chatState) => `
-    <div class="nl4-topbar" title="按住标题栏自由拖动，双击居中复位">
-      <div class="nl4-brand">
-        <div class="nl4-brand-globe">${GLOBE_SVG}</div>
-        <div>
-          <h2 class="nl4-title">${esc(PLUGIN_NAME)}</h2>
-          <p class="nl4-subtitle">v${esc(VERSION)}${chatState.storyTime ? ` · 剧情时间 ${esc(chatState.storyTime)}` : " · 独立活世界引擎"}</p>
+  const renderTopbar = (_settings, chatState) => {
+    const isMob = resolveLayout() === "mobile";
+    return `
+      <div class="nl4-topbar" title="按住标题栏自由拖动，双击居中复位">
+        <div class="nl4-brand">
+          <div class="nl4-brand-globe">${GLOBE_SVG}</div>
+          <div>
+            <h2 class="nl4-title">${esc(PLUGIN_NAME)}</h2>
+            <p class="nl4-subtitle">v${esc(VERSION)}${chatState.storyTime ? ` · ${isMob ? "" : "剧情时间 "}${esc(chatState.storyTime)}` : isMob ? "" : " · 独立活世界引擎"}</p>
+          </div>
         </div>
-      </div>
-      <div class="nl4-top-actions">
-        <button type="button" class="nl4-btn nl4-btn-primary" data-act="run-now" ${busyText ? "disabled" : ""}>
-          ${busyText ? esc(busyText) : "立即更新"}
-        </button>
-        <button type="button" class="nl4-btn nl4-btn-sm" data-act="toggle-theme" title="切换墨砚/宣纸主题">${theme === "dark" ? "☀ 宣纸" : "🌙 墨砚"}</button>
-        <button type="button" class="nl4-btn nl4-btn-sm" data-act="center-win" title="窗口居中复位">复位</button>
-        <button type="button" class="nl4-btn nl4-btn-sm" data-act="close" aria-label="关闭">✕</button>
-      </div>
-    </div>`;
+        <div class="nl4-top-actions">
+          <button type="button" class="nl4-btn nl4-btn-primary ${isMob ? "nl4-btn-sm" : ""}" data-act="run-now" ${busyText ? "disabled" : ""}>
+            ${busyText ? esc(busyText) : isMob ? "更新" : "立即更新"}
+          </button>
+          <button type="button" class="nl4-btn nl4-btn-sm" data-act="toggle-theme" title="切换墨砚/宣纸主题">${isMob ? (theme === "dark" ? "☀" : "🌙") : theme === "dark" ? "☀ 宣纸" : "🌙 墨砚"}</button>
+          <button type="button" class="nl4-btn nl4-btn-sm nl4-desktop-only" data-act="center-win" title="窗口居中复位">复位</button>
+          <button type="button" class="nl4-btn nl4-btn-sm" data-act="close" aria-label="关闭">✕</button>
+        </div>
+      </div>`;
+  };
 
   const renderRightBookTabs = (chatState) => {
     const livingCount = Object.keys(chatState.npcs || {}).filter((n) => !isDeceased(chatState, n)).length;
@@ -471,8 +556,8 @@ export function mountUi(host, engine) {
         <span class="nl4-foot-item">本轮请求：${esc(budgetSnap.used)} / ${esc(budgetSnap.cap)}</span>
         ${
           lastTok
-            ? `<span class="nl4-foot-right">上次约 ${esc(lastTok.tokens)} Token（世界书 ${esc(lastTok.worldbookChars)} 字 · 卡片 ${esc(lastTok.cardChars)} 字）</span>`
-            : `<span class="nl4-foot-right">拖动标题栏可移动 · 右下角可缩放</span>`
+            ? `<span class="nl4-foot-right">上次约 ${esc(lastTok.tokens)} Token<span class="nl4-desktop-only">（世界书 ${esc(lastTok.worldbookChars)} 字 · 卡片 ${esc(lastTok.cardChars)} 字）</span></span>`
+            : `<span class="nl4-foot-right nl4-desktop-only">拖动标题栏可移动 · 右下角可缩放</span>`
         }
       </div>`;
   };
@@ -536,9 +621,10 @@ export function mountUi(host, engine) {
       );
     };
 
+    const isMob = resolveLayout() === "mobile";
     const rosterSearchHtml =
       allNames.length > 5
-        ? `<input class="nl4-input" id="nl4-roster-search" type="search" value="${esc(rosterFilter)}" placeholder="🔍 筛选角色名 / 别名 / 地点…" style="margin-bottom:6px">`
+        ? `<input class="nl4-input" id="nl4-roster-search" type="search" value="${esc(rosterFilter)}" placeholder="${isMob ? "🔍 筛选" : "🔍 筛选角色名 / 别名 / 地点…"}" style="margin-bottom:6px">`
         : "";
     const rosterHtml = `${rosterSearchHtml}<div id="nl4-roster-items" style="display:flex;flex-direction:column;gap:6px">${buildRosterInnerHtml(rosterFilter)}</div>`;
 
@@ -654,7 +740,7 @@ export function mountUi(host, engine) {
           <div class="nl4-npc-detail">${detailHtml}</div>
         </div>
 
-        <details class="nl4-box" ${allNames.length === 0 ? "open" : ""}>
+        <details class="nl4-box nl4-add-drawer" ${allNames.length === 0 ? "open" : ""}>
           <summary>＋ 手动添加角色</summary>
           <div class="nl4-form-grid" style="margin-top:8px">
             <label>角色名 *<input class="nl4-input" id="nl4-add-name" placeholder="如：林霜"></label>
@@ -1033,6 +1119,16 @@ export function mountUi(host, engine) {
             ${renderControlRow({ title: "单条正文字数上限（0 = 不截断）", desc: "默认 0 完整保留全部正文与状态栏，仅清思维链噪音", controlHtml: `<input class="nl4-input nl4-num" type="number" min="0" max="20000" step="500" data-cost="replyCharCap" value="${esc(cost.replyCharCap)}">` })}
             ${renderControlRow({ title: "读取最近回复条数", desc: "每次后台更新附带最近几楼 AI 回复作为上下文（1~6 条）", controlHtml: `<input class="nl4-input nl4-num" type="number" min="1" max="6" data-setting-num="recentReplyCount" value="${esc(settings.recentReplyCount)}">` })}
             ${renderToggleRow({ title: "显示屏幕悬浮「小地球」图标", desc: "关闭后仍可从酒馆魔法棒菜单或扩展设置里打开浮窗", attrs: 'data-setting="showFloatingButton"', checked: settings.showFloatingButton !== false })}
+            ${renderToggleRow({ title: "悬浮「小地球」贴边半隐藏", desc: "闲置时自动半隐藏在屏幕左右边缘只露出一点不挡正文，轻点或拖动即滑出", attrs: 'data-setting="orbAutoHideEdge"', checked: settings.orbAutoHideEdge !== false })}
+            ${renderControlRow({
+              title: "面板布局模式",
+              desc: "自动模式在手机窄屏下启用「左人右信息」紧凑双栏，电脑端保持完整手账布局",
+              controlHtml: `<select class="nl4-input nl4-select-sm" data-setting="uiLayout">
+                <option value="auto" ${(settings.uiLayout || "auto") === "auto" ? "selected" : ""}>自动识别电脑 / 手机端（推荐）</option>
+                <option value="mobile" ${settings.uiLayout === "mobile" ? "selected" : ""}>强制手机端（左人右信息）</option>
+                <option value="desktop" ${settings.uiLayout === "desktop" ? "selected" : ""}>强制电脑端手账布局</option>
+              </select>`
+            })}
           </div>
         </div>
 
@@ -1067,9 +1163,10 @@ export function mountUi(host, engine) {
     else if (activeTab === "api") body = renderApiTab(settings);
     else body = renderSettingsTab(settings);
 
+    const mainClass = activeTab === "npcs" ? "nl4-main nl4-main-npcs" : "nl4-main";
     panel.innerHTML =
       renderTopbar(settings, chatState) +
-      `<div class="nl4-main">${body}</div>` +
+      `<div class="${mainClass}">${body}</div>` +
       renderFoot(settings, budgetSnap) +
       renderRightBookTabs(chatState) +
       `<div class="nl4-resize" title="拖拽缩放窗口"></div>`;
@@ -1603,6 +1700,10 @@ export function mountUi(host, engine) {
     render,
     destroy() {
       unsub();
+      if (dockTimer) {
+        clearTimeout(dockTimer);
+        dockTimer = null;
+      }
       window.removeEventListener("resize", onViewportResize);
       window.removeEventListener("orientationchange", onViewportResize);
       window.visualViewport?.removeEventListener("resize", onViewportResize);
