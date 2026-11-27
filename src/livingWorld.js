@@ -287,6 +287,25 @@ export function buildMainPromptInjection(chatState, settings, recentText = "", o
     }
 
     const inScene = detectInSceneNpcs(recentText, chatState.npcs);
+    if (settings.livingWorld?.secretScriptEnabled !== false && inScene.length) {
+      const secretLines = [];
+      for (const name of inScene) {
+        const card = chatState.npcs?.[name];
+        if (!card || card.tracked === false || isDeceased(chatState, name)) continue;
+        const plan = String(card["藏起来的打算"] || "").trim();
+        if (!plan || /^(无|没有|暂无|已清空|已解决)$/i.test(plan)) continue;
+        secretLines.push(`- ${name}：${plan}`);
+        if (secretLines.length >= 3) break;
+      }
+      if (secretLines.length) {
+        sections.push(
+          "【在场 NPC 的暗中意图（演员暗剧本·只演行动不剧透）】\n" +
+            "（仅作在场角色行动动机：1.不抢戏，顺当前节奏演；2.严禁旁白直白泄底，只用微表情、借口、顺路举动或试探表露；3.一旦剧情出现自然契机如路过相关地点或提及相关物事，即可顺势展开行动。）\n" +
+            secretLines.join("\n")
+        );
+      }
+    }
+
     const onSceneKnows = (chatState.world.ledger.knows || []).filter(
       (k) => inScene.includes(k.npc) && k.status !== "done" && !isDeceased(chatState, k.npc)
     );
@@ -304,6 +323,17 @@ export function buildMainPromptInjection(chatState, settings, recentText = "", o
       sections.push(
         "【可能自然触发的主动偶遇 / 来访（若剧情节奏合适可自然安排，勿生硬打断）】\n" +
           pendingQueue.slice(0, 3).map((q) => `- ${q.npc}：${q.action}`).join("\n")
+      );
+    }
+
+    const friction = settings.livingWorld?.worldFriction || "gentle";
+    if (friction === "realistic") {
+      sections.push(
+        "【世界真实度准则（写实）】若主角请求与在场 NPC 当下急事、未完成事项、伤病、时间成本或核心立场冲突，NPC 应按自身利益自然推迟、婉拒或提出交换条件，勿无条件迁就主角。"
+      );
+    } else if (friction === "hardcore") {
+      sections.push(
+        "【世界真实度准则（硬核）】严禁无条件顺从主角：NPC 严格按自身利害、急事、伤病与资源成本行事，冲突时果断拒绝、反制或离开；机会窗口与约定过期不候，主角的选择与疏忽必有对等代价。"
       );
     }
   }

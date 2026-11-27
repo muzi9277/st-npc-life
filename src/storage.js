@@ -15,6 +15,9 @@ function deepClone(obj) {
 function mergeSettings(raw) {
   const base = createDefaultSettings();
   if (!raw || typeof raw !== "object") return base;
+  const lwRaw = raw.livingWorld || {};
+  const validFriction =
+    lwRaw.worldFriction === "realistic" || lwRaw.worldFriction === "hardcore" ? lwRaw.worldFriction : "gentle";
   return {
     ...base,
     ...raw,
@@ -29,11 +32,13 @@ function mergeSettings(raw) {
         ? raw.worldbook.customFields
         : [...WB_PRESETS.full]
     },
-    livingWorld: { ...base.livingWorld, ...(raw.livingWorld || {}) },
+    livingWorld: { ...base.livingWorld, ...lwRaw, worldFriction: validFriction },
     cost: { ...base.cost, ...(raw.cost || {}) },
     customSegments: Array.isArray(raw.customSegments) ? raw.customSegments : []
   };
 }
+
+const EMPTY_CARD_SENTINEL_RE = /^(无|没有|暂无|已清空|已解决|已放弃|已暴露|已恢复|痊愈|无伤)$/i;
 
 /**
  * Sanitize an NPC card (strips legacy physio/romance bloat during migration or model merge).
@@ -47,7 +52,10 @@ export function sanitizeNpcCard(name, raw = {}) {
     "衣物/随身物", "伤势/体力"
   ];
   for (const k of strFields) {
-    if (src[k] != null) card[k] = String(src[k]).trim();
+    if (src[k] != null) {
+      const cleaned = String(src[k]).trim();
+      card[k] = (k === "藏起来的打算" || k === "伤势/体力") && EMPTY_CARD_SENTINEL_RE.test(cleaned) ? "" : cleaned;
+    }
   }
   const extraAliases = [];
   if (src["曾用名"]) extraAliases.push(String(src["曾用名"]));

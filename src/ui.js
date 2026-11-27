@@ -107,18 +107,27 @@ export function mountUi(host, engine) {
   let isOpen = false;
   let selectedNpc = null;
   let editingNpc = null;
+  let peekedSecretNpc = null;
   let busyText = "";
   let fetchedModels = [];
   let rosterFilter = "";
   let dockSide = "right";
   let dockTimer = null;
+  let bootRevealActive = true;
+  let bootRevealTimer = null;
+  const healTimers = [];
   let isOrbDragging = false;
   let theme = readJsonLS(THEME_KEY, "dark") === "light" ? "light" : "dark";
+
+  const getSafeViewport = () => ({
+    vw: Math.max(320, window.innerWidth || document.documentElement?.clientWidth || 390),
+    vh: Math.max(480, window.visualViewport?.height || window.innerHeight || document.documentElement?.clientHeight || 700)
+  });
 
   const resolveLayout = () => {
     const pref = engine.getSettings().uiLayout || "auto";
     if (pref === "mobile" || pref === "desktop") return pref;
-    return (window.innerWidth || 1280) <= 760 ? "mobile" : "desktop";
+    return getSafeViewport().vw <= 760 ? "mobile" : "desktop";
   };
 
   let root = document.getElementById("nl4-root");
@@ -150,8 +159,8 @@ export function mountUi(host, engine) {
   const applyEdgeDockState = (side) => {
     orb.classList.remove("docked-left", "docked-right");
     const autoHide = engine.getSettings().orbAutoHideEdge !== false;
-    if (!autoHide || !side || isOrbDragging) return;
-    const vw = window.innerWidth || 1280;
+    if (!autoHide || !side || isOrbDragging || bootRevealActive) return;
+    const { vw } = getSafeViewport();
     const orbW = 48;
     orb.style.left = side === "left" ? "0px" : `${Math.max(0, vw - orbW)}px`;
     orb.classList.add(side === "left" ? "docked-left" : "docked-right");
@@ -170,8 +179,7 @@ export function mountUi(host, engine) {
   };
 
   const applyOrbPos = (pos, snapEdge = false) => {
-    const vw = window.innerWidth || 1280;
-    const vh = window.visualViewport?.height || window.innerHeight || 800;
+    const { vw, vh } = getSafeViewport();
     const autoHide = engine.getSettings().orbAutoHideEdge !== false;
     const margin = autoHide ? 0 : 10;
     const orbW = 48;
@@ -212,8 +220,7 @@ export function mountUi(host, engine) {
   applyOrbPos(readJsonLS(POS_ORB_KEY), false);
 
   const centerPanel = () => {
-    const vw = window.innerWidth || 1280;
-    const vh = window.innerHeight || 800;
+    const { vw, vh } = getSafeViewport();
     const w = Math.min(1040, Math.round(vw * 0.92));
     const h = Math.min(720, Math.round(vh - 64));
     const left = Math.max(10, Math.round((vw - w) / 2));
@@ -229,8 +236,7 @@ export function mountUi(host, engine) {
       centerPanel();
       return;
     }
-    const vw = window.innerWidth || 1280;
-    const vh = window.innerHeight || 800;
+    const { vw, vh } = getSafeViewport();
     const w = clamp(rect.width || 980, 560, Math.max(560, vw - 24));
     const h = clamp(rect.height || 680, 420, Math.max(420, vh - 24));
     const left = clamp(rect.left, 6, Math.max(6, vw - 140));
@@ -301,8 +307,7 @@ export function mountUi(host, engine) {
         orb.classList.add("dragging");
       }
       if (!drag.moved) return;
-      const vw = window.innerWidth || 1280;
-      const vh = window.visualViewport?.height || window.innerHeight || 800;
+      const { vw, vh } = getSafeViewport();
       pendingDx = clamp(drag.origLeft + dx, 0, Math.max(0, vw - 48)) - drag.origLeft;
       pendingDy = clamp(drag.origTop + dy, 8, Math.max(8, vh - 56)) - drag.origTop;
       if (!rafId) {
@@ -377,8 +382,7 @@ export function mountUi(host, engine) {
 
     panel.addEventListener("pointermove", (e) => {
       if (winDrag && e.pointerId === winDrag.pointerId) {
-        const vw = window.innerWidth || 1280;
-        const vh = window.innerHeight || 800;
+        const { vw, vh } = getSafeViewport();
         dx = clamp(winDrag.left + (e.clientX - winDrag.startX), -220, vw - 140) - winDrag.left;
         dy = clamp(winDrag.top + (e.clientY - winDrag.startY), 0, vh - 60) - winDrag.top;
         if (!rafId) {
@@ -388,8 +392,7 @@ export function mountUi(host, engine) {
           });
         }
       } else if (winResize && e.pointerId === winResize.pointerId) {
-        const vw = window.innerWidth || 1280;
-        const vh = window.innerHeight || 800;
+        const { vw, vh } = getSafeViewport();
         const nextW = clamp(winResize.w + (e.clientX - winResize.startX), 560, vw - 20);
         const nextH = clamp(winResize.h + (e.clientY - winResize.startY), 420, vh - 20);
         if (!rafId) {
@@ -446,7 +449,7 @@ export function mountUi(host, engine) {
       orb.classList.remove("docked-left", "docked-right");
     } else if (!isOrbDragging) {
       if (!dockSide) {
-        const vw = window.innerWidth || 1280;
+        const { vw } = getSafeViewport();
         const curLeft = parseFloat(orb.style.left);
         dockSide = Number.isFinite(curLeft) && curLeft + 24 < vw / 2 ? "left" : "right";
       }
@@ -463,6 +466,7 @@ export function mountUi(host, engine) {
   const close = () => {
     isOpen = false;
     editingNpc = null;
+    peekedSecretNpc = null;
     panel.classList.add("nl4-hidden");
   };
 
@@ -714,7 +718,14 @@ export function mountUi(host, engine) {
               <dt>身份锚点</dt><dd>${esc(card["身份锚点"] || "—")}</dd>
               <dt>生活状态</dt><dd>${esc(card["生活状态"] || "—")}</dd>
               <dt>心事</dt><dd>${esc(card["心事"] || "—")}</dd>
-              <dt>藏起来的打算</dt><dd>${esc(card["藏起来的打算"] || "—")}</dd>
+              <dt>藏起来的打算</dt><dd>${(() => {
+                const secretPlan = String(card["藏起来的打算"] || "").trim();
+                if (!secretPlan) return "—";
+                if (godView || peekedSecretNpc === name) {
+                  return `${esc(secretPlan)}${!godView ? ' <button type="button" class="nl4-btn nl4-btn-sm nl4-peek-hide" data-act="hide-secret">重新隐藏</button>' : ""}`;
+                }
+                return `<button type="button" class="nl4-secret-mask" data-act="peek-secret" data-npc="${esc(name)}">🔒 暗中意图已隐藏 · 点击临时偷看</button>`;
+              })()}</dd>
               <dt>当前目标</dt><dd>${esc(card["当前目标"] || "—")}</dd>
               <dt>接下来想做</dt><dd>${esc(card["接下来想做"] || "—")}</dd>
               <dt>近期关键事件</dt><dd>${esc(card["近期关键事件"] || "—")}</dd>
@@ -1047,6 +1058,16 @@ export function mountUi(host, engine) {
           <h3 class="nl4-h3">🌍 活世界与命运钟开关</h3>
           <div class="nl4-setting-list" style="margin-top:6px">
             ${renderToggleRow({ title: "启用活世界引擎", desc: "开启防全知知情账本、本地传闻扩散与主动偶遇队列", attrs: 'data-lw="enabled"', checked: lw.enabled })}
+            ${renderToggleRow({ title: "在场 NPC 暗剧本（只演行动不剧透）", desc: "仅把在场角色的「藏起来的打算」以“不抢戏/不泄底/有契机才行动”原则注给主模型（最多 3 人，离场绝不泄露）", attrs: 'data-lw="secretScriptEnabled"', checked: lw.secretScriptEnabled !== false })}
+            ${renderControlRow({
+              title: "世界阻力 / 真实度",
+              desc: "柔和几乎 0 额外消耗；写实/硬核让 NPC 在冲突时自然拒绝、提条件，幕后计划也会遇到真实挫折",
+              controlHtml: `<select class="nl4-input nl4-select-sm" data-lw="worldFriction">
+                <option value="gentle" ${(lw.worldFriction || "gentle") === "gentle" ? "selected" : ""}>柔和（默认 · 0 额外消耗）</option>
+                <option value="realistic" ${lw.worldFriction === "realistic" ? "selected" : ""}>写实（推荐 · 合理拒绝与受挫）</option>
+                <option value="hardcore" ${lw.worldFriction === "hardcore" ? "selected" : ""}>硬核（高阻力 · 机会过期不候）</option>
+              </select>`
+            })}
             ${renderToggleRow({ title: "启用轻量「世界近况」（0 额外请求）", desc: "记录封城/天灾/祭典等公共大事并同轮喂给幕后 NPC，保持大环境连贯", attrs: 'data-lw="worldTrendsEnabled"', checked: lw.worldTrendsEnabled !== false })}
             ${renderToggleRow({ title: "启用命运钟与真实死亡后果", desc: "按剧情天数推进危机倒计时；死亡自动生成现场遗留痕迹并严防诈尸", attrs: 'data-lw="fateClocks"', checked: lw.fateClocks })}
             ${renderToggleRow({ title: "正文危机自动挂命运钟（0 额外请求）", desc: "正文出现中毒/囚禁断粮/重伤垂危等限时危机时，由主更新顺带挂钟", attrs: 'data-lw="autoCreateClocksFromProse"', checked: lw.autoCreateClocksFromProse !== false })}
@@ -1183,6 +1204,7 @@ export function mountUi(host, engine) {
     if (tabBtn) {
       activeTab = tabBtn.dataset.tab;
       editingNpc = null;
+      peekedSecretNpc = null;
       render();
       return;
     }
@@ -1191,6 +1213,7 @@ export function mountUi(host, engine) {
     if (rosterBtn) {
       selectedNpc = rosterBtn.dataset.selectNpc;
       editingNpc = null;
+      peekedSecretNpc = null;
       render();
       return;
     }
@@ -1211,6 +1234,16 @@ export function mountUi(host, engine) {
 
     if (act === "close") return close();
     if (act === "center-win") return centerPanel();
+    if (act === "peek-secret") {
+      peekedSecretNpc = actBtn.dataset.npc || null;
+      render();
+      return;
+    }
+    if (act === "hide-secret") {
+      peekedSecretNpc = null;
+      render();
+      return;
+    }
     if (act === "toggle-theme") {
       theme = theme === "dark" ? "light" : "dark";
       root.dataset.theme = theme;
@@ -1612,9 +1645,12 @@ export function mountUi(host, engine) {
     if (el.dataset.lw) {
       const k = el.dataset.lw;
       engine.updateSettings((s) => {
-        s.livingWorld[k] = el.type === "checkbox" ? el.checked : Math.max(1, Math.min(6, Math.round(Number(el.value) || 3)));
+        if (el.type === "checkbox") s.livingWorld[k] = el.checked;
+        else if (el.tagName === "SELECT") s.livingWorld[k] = el.value;
+        else s.livingWorld[k] = Math.max(1, Math.min(6, Math.round(Number(el.value) || 3)));
         return s;
       });
+      await engine.persistState(null, false).catch(() => {});
       return;
     }
     if (el.dataset.api) {
@@ -1689,21 +1725,65 @@ export function mountUi(host, engine) {
     }
   });
 
+  const ensureMounted = () => {
+    if (document.body && !document.body.contains(root)) {
+      document.body.appendChild(root);
+    }
+    mountStEntryPoints();
+    const curLeft = parseFloat(orb.style.left);
+    const curTop = parseFloat(orb.style.top);
+    if (Number.isFinite(curLeft) && Number.isFinite(curTop)) {
+      applyOrbPos({ left: curLeft, top: curTop }, false);
+    } else {
+      applyOrbPos(readJsonLS(POS_ORB_KEY), false);
+    }
+    syncOrbStatus();
+  };
+
+  const onVisibleOrShow = () => {
+    if (document.visibilityState !== "hidden") {
+      ensureMounted();
+    }
+  };
+  window.addEventListener("pageshow", onVisibleOrShow);
+  document.addEventListener("visibilitychange", onVisibleOrShow);
+
   const unsub = engine.subscribe(() => render());
-  mountStEntryPoints();
-  syncOrbStatus();
+  ensureMounted();
+
+  // Show orb fully for 3s on cold boot so mobile users immediately spot it before gentle edge-tuck
+  bootRevealTimer = setTimeout(() => {
+    bootRevealTimer = null;
+    bootRevealActive = false;
+    if (dockSide) applyEdgeDockState(dockSide);
+  }, 3000);
+
+  // Staggered cold-start self-healing for #extensionsMenu / #extensions_settings2 on slow mobile devices
+  for (const ms of [1500, 4000, 8000]) {
+    healTimers.push(setTimeout(() => ensureMounted(), ms));
+  }
 
   return {
     open,
     close,
     toggle,
     render,
+    ensureMounted,
     destroy() {
       unsub();
       if (dockTimer) {
         clearTimeout(dockTimer);
         dockTimer = null;
       }
+      if (bootRevealTimer) {
+        clearTimeout(bootRevealTimer);
+        bootRevealTimer = null;
+      }
+      while (healTimers.length) {
+        clearTimeout(healTimers.pop());
+      }
+      window.removeEventListener("pageshow", onVisibleOrShow);
+      document.removeEventListener("visibilitychange", onVisibleOrShow);
       window.removeEventListener("resize", onViewportResize);
       window.removeEventListener("orientationchange", onViewportResize);
       window.visualViewport?.removeEventListener("resize", onViewportResize);

@@ -47,7 +47,7 @@ export const COMPACT_SYSTEM_PROMPT = `你是「NPC Life · 活世界」的后台
 3. 时间推进与反雷同：核心三字段「当前在做 / 当前状态 / 位置」每轮必返，且必须与最新正文时刻一致、真正往前推进（已有计划/目标就落到行动进展上，否则用生活流体现推移，严禁换近义词原地踏步）。
 4. 身份锚点与一致性：首次建卡必填「身份锚点」（身份/性格底色/典型一天作息与常来往的人），已有锚点保持稳定；具体名词不可泛化（旧卡写“玩偶/城北药铺”等具体物件地点，严禁改写为“礼物/某处”）。
 5. 角色筛选与别名（切勿遗漏在场角色）：凡是在【最新回复】中实际在场互动、对话或有明确戏份的重要角色（无论有正式姓名，还是如“姐姐/管家/老师”这类固定核心称谓），都要**全部识别并平铺建档，严禁漏掉任何一位在场重要角色**！只排除主角本人与无台词纯背景路人/店员。昵称/曾用名合并入原正式名下并写入 "别名" 数组。
-6. 增量返回与精炼输出：除核心三字段外，其余字段仅在有实质变化时返回，单字段控制在 1 句话内以防多角色输出被截断；仅确实死亡的已建档角色列入 "移除NPC"（远行/失联绝不移除）。
+6. 增量返回与精炼输出：除核心三字段外，其余字段仅在有实质变化时返回，单字段控制在 1 句话内以防多角色输出被截断；仅确实死亡的已建档角色列入 "移除NPC"（远行/失联绝不移除）。若旧的「藏起来的打算」已实施、暴露或放弃，或「伤势/体力」已痊愈，请显式返回空字符串 "" 清空该字段（或更新为新的下一步打算）。
 
 输出 JSON 结构：
 {
@@ -90,7 +90,7 @@ export const FULL_SYSTEM_PROMPT = `你是「NPC Life · 活世界」——维护
    - 行为由深层动机（守护所爱、生存、信念、补偿过往、野心等）驱动，而非表面标签；优先贴合世界书人设（职业、作息、家庭、社交圈），与已发生剧情冲突时以剧情为准；每个字段控制在 1~2 句。
 4. 动态字段分工与一致性铁律：
    - 具体名词不可泛化（优先级仅次于防全知）：旧卡写下的具体物品名 / 人名 / 地点 / 约定（如“玩偶”“市二医院”），除非正文明确改换或遗失，必须原样保留，严禁泛化为“礼物 / 东西 / 某处”。
-   - 「心事」（情感层：惦记/放不下/瞒着的念头）与「藏起来的打算」（计划层：没说出口的下一步手段）与「当前目标」（公开方向）分工明确；仅在有进展、新牵挂、改主意、动手或淡化时更新，不要因本轮未提及就清空旧心思。
+   - 「心事」（情感层：惦记/放不下/瞒着的念头）与「藏起来的打算」（计划层：没说出口的下一步手段）与「当前目标」（公开方向）分工明确；仅在有进展、新牵挂、改主意、动手或淡化时更新，不要因本轮未提及就清空旧心思。若旧的「藏起来的打算」确已实施完毕、被揭穿或彻底放弃，或「伤势/体力」已恢复正常，请显式返回空字符串 "" 予以清空（或改写为新的下一步打算）。
    - 「衣物/随身物」只写当下具体穿戴物件；「伤势/体力」只写身体客观状况（无伤留空，不与「当前状态」的情绪重复）。
 5. 重要 NPC 判定、别名与移除：
    - 仅实际出场/说话/行动且有明确姓名的角色才建档（新建一次性补全字段）；主角、无名角色与纯背景路人/店员不建档。
@@ -163,6 +163,16 @@ export function buildUpdateMessages({
         `【当前世界近况（背景局势：公开大事可作为 NPC 幕后生活参考，但须体现消息渠道如“听街坊说…”，严禁当作本轮新事件或无视防全知）】\n${trendBlock}`
       );
     }
+  }
+  const friction = settings.livingWorld?.worldFriction || "gentle";
+  if (friction === "realistic") {
+    staticParts.push(
+      "【世界阻力档位：写实】推演 NPC 幕后计划与目标时，允许并鼓励因客观条件、资源不足、时间冲突或他人阻碍出现真实受挫、延期或被迫改道，不要让所有打算都一帆风顺。"
+    );
+  } else if (friction === "hardcore") {
+    staticParts.push(
+      "【世界阻力档位：硬核】推演 NPC 幕后行动时严格计较资源、伤病、时间窗与外部阻力；计划受阻须付出真实代价或失败，若出现错过即失效的危机或机会窗，可按规则挂入「新命运钟」。"
+    );
   }
   const staticMsg = staticParts.length
     ? [{ role: "system", content: expand(staticParts.join("\n\n")) }]
@@ -427,6 +437,8 @@ export function mergeUpdateResponse(chatState, parsedData, settings, playerName 
         "心事", "藏起来的打算", "当前目标", "接下来想做",
         "衣物/随身物", "伤势/体力"
       ];
+      const clearableFields = new Set(["藏起来的打算", "伤势/体力"]);
+      const clearSentinelRe = /^(无|没有|暂无|已清空|已解决|已放弃|已暴露|已恢复|痊愈|无伤)$/i;
       // Preserve stable 身份锚点 unless empty or explicitly provided when short
       if (typeof val["身份锚点"] === "string" && val["身份锚点"].trim()) {
         if (!card["身份锚点"] || card["身份锚点"].length < 8) {
@@ -434,8 +446,13 @@ export function mergeUpdateResponse(chatState, parsedData, settings, playerName 
         }
       }
       for (const f of strFields) {
-        if (typeof val[f] === "string" && val[f].trim()) {
-          card[f] = val[f].trim();
+        if (typeof val[f] === "string") {
+          const trimmed = val[f].trim();
+          if (clearableFields.has(f) && (!trimmed || clearSentinelRe.test(trimmed))) {
+            card[f] = "";
+          } else if (trimmed) {
+            card[f] = trimmed;
+          }
         }
       }
       if (typeof val["近期关键事件"] === "string" && val["近期关键事件"].trim()) {
@@ -500,6 +517,30 @@ export function createNpcLifeEngine(host) {
     chatState = loadChatState(host);
     emitChange();
     return chatState;
+  };
+
+  const tryLateLegacyMigration = () => {
+    let migrated = false;
+    if (!host.storage.readGlobal(KEYS.SETTINGS) && !settings._migratedFromLegacy) {
+      const nextS = loadSettings(host);
+      if (nextS._migratedFromLegacy) {
+        settings = nextS;
+        budget.reset(budget.snapshot().turnKey, settings.cost?.maxSubApiCallsPerTurn ?? 3);
+        migrated = true;
+      }
+    }
+    if (!host.storage.readChatMeta(KEYS.CHAT_STATE) && Object.keys(chatState.npcs || {}).length === 0) {
+      const nextC = loadChatState(host);
+      if (Object.keys(nextC.npcs || {}).length > 0 || (nextC.world?.clocks || []).length > 0) {
+        chatState = nextC;
+        migrated = true;
+      }
+    }
+    if (migrated) {
+      emitChange();
+      handleBeforeGeneration().catch(() => {});
+    }
+    return migrated;
   };
 
   const updateSettings = (updater) => {
@@ -868,6 +909,7 @@ export function createNpcLifeEngine(host) {
       return () => listeners.delete(fn);
     },
     reloadForCurrentChat,
+    tryLateLegacyMigration,
     updateSettings,
     persistState,
     addNpc,

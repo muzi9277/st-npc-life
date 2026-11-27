@@ -8,6 +8,23 @@ const RISK_KEYWORDS = [
   "期限", "最后期限", "活不过", "撑不过", "没人照料", "无人照顾", "倒计时"
 ];
 
+const LOC_SUFFIX_RE =
+  /(?:大门口|正门口|后门口|门口|门外|门前|里面|内部|旁边|附近|周边|大厅|大堂|广场|一楼|二楼|三楼|楼上|楼下|室内|室外|屋外|屋内|外头|里头|里|外|内|处)$/u;
+
+/**
+ * Strip trailing spatial qualifiers so e.g. "图书馆门口" can still match "图书馆".
+ */
+export function normalizeLocationCore(loc) {
+  let s = String(loc || "").trim();
+  if (s.length < 3) return s;
+  for (let i = 0; i < 2; i++) {
+    const stripped = s.replace(LOC_SUFFIX_RE, "").trim();
+    if (stripped.length >= 2 && stripped !== s) s = stripped;
+    else break;
+  }
+  return s;
+}
+
 export function isDeceased(chatState, npcName) {
   return Boolean(chatState?.world?.deceased?.[npcName]);
 }
@@ -206,7 +223,12 @@ export function advanceFateClocks(chatState, latestText, settings) {
     if (!clk || clk.status === "paused" || clk.status === "resolved") continue;
     const card = chatState.npcs?.[clk.npc];
     const mentionsNpc = textMentionsNpc(text, clk.npc, card?.aliases || []);
-    const mentionsLoc = Boolean(clk.location && clk.location.length >= 2 && text.includes(clk.location));
+    const locFull = String(clk.location || "").trim();
+    const locCore = normalizeLocationCore(locFull);
+    const mentionsLoc = Boolean(
+      (locFull.length >= 2 && text.includes(locFull)) ||
+        (locCore.length >= 2 && text.includes(locCore))
+    );
 
     if (clk.status === "active") {
       // If player visits/cares before deadline (without negated phrasing) -> reset elapsed timer!

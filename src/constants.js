@@ -1,4 +1,4 @@
-export const VERSION = "4.0.0-beta.7";
+export const VERSION = "4.1.0";
 export const PLUGIN_NAME = "NPC Life · 活世界";
 
 // Brand-new independent storage keys (zero collision with legacy Bifa)
@@ -99,6 +99,8 @@ export function createDefaultSettings() {
     livingWorld: {
       enabled: true,
       worldTrendsEnabled: true,
+      secretScriptEnabled: true, // Inject in-scene NPCs' hidden plans as actor subtext (max 3, Show Don't Tell)
+      worldFriction: "gentle", // "gentle" | "realistic" | "hardcore"
       isolatedNpcCalls: false,
       isolatedMaxNpcs: 3,
       fateClocks: true,
