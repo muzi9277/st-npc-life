@@ -626,12 +626,9 @@ export function mountUi(host, engine) {
 
     return `
       <div class="nl4-section">
-        <div class="nl4-box">
-          <div class="nl4-setting-list">
-            ${renderToggleRow({ title: "启用 NPC Life 后台引擎", desc: "总开关；关闭后不会自动请求副 API 或向主模型注入提示词", attrs: 'data-setting="enabled"', checked: settings.enabled })}
-            ${renderToggleRow({ title: "AI 回复后自动更新角色", desc: "每轮新剧情结束后自动用副 API 推进在场与幕后角色状态", attrs: 'data-setting="autoUpdate"', checked: settings.autoUpdate })}
-            ${renderToggleRow({ title: "自动识别并建档新 NPC", desc: "关闭后仅更新已追踪名单中的角色，不再为新出场人物建卡", attrs: 'data-setting="autoTrack"', checked: settings.autoTrack })}
-          </div>
+        <div class="nl4-npc-split">
+          <div class="nl4-npc-roster">${rosterHtml}</div>
+          <div class="nl4-npc-detail">${detailHtml}</div>
         </div>
 
         <details class="nl4-box" ${allNames.length === 0 ? "open" : ""}>
@@ -645,11 +642,6 @@ export function mountUi(host, engine) {
           </div>
           <div style="margin-top:8px"><button type="button" class="nl4-btn nl4-btn-primary nl4-btn-sm" data-act="add-npc">添加角色</button></div>
         </details>
-
-        <div class="nl4-npc-split">
-          <div class="nl4-npc-roster">${rosterHtml}</div>
-          <div class="nl4-npc-detail">${detailHtml}</div>
-        </div>
       </div>`;
   };
 
@@ -931,6 +923,15 @@ export function mountUi(host, engine) {
 
     return `
       <div class="nl4-section">
+        <div class="nl4-box">
+          <h3 class="nl4-h3">⚙️ 核心运行开关</h3>
+          <div class="nl4-setting-list" style="margin-top:6px">
+            ${renderToggleRow({ title: "启用 NPC Life 后台引擎", desc: "总开关；关闭后不会自动请求副 API 或向主模型注入提示词", attrs: 'data-setting="enabled"', checked: settings.enabled })}
+            ${renderToggleRow({ title: "AI 回复后自动更新角色", desc: "每轮新剧情结束后自动用副 API 推进在场与幕后角色状态", attrs: 'data-setting="autoUpdate"', checked: settings.autoUpdate })}
+            ${renderToggleRow({ title: "自动识别并建档新 NPC", desc: "关闭后仅更新已追踪名单中的角色，不再为新出场人物建卡", attrs: 'data-setting="autoTrack"', checked: settings.autoTrack })}
+          </div>
+        </div>
+
         <div class="nl4-box">
           <div class="nl4-card-head">
             <h3 class="nl4-h3">📚 世界书读写与主模型注入</h3>
