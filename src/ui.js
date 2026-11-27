@@ -13,6 +13,7 @@ import {
 } from "./api.js";
 import { createClock, isDeceased, reviveOrUndoClock } from "./clocks.js";
 import { getEffectiveSystemPrompt } from "./engine.js";
+import { upsertWorldTrend } from "./livingWorld.js";
 import { detectInSceneNpcs } from "./text.js";
 import { syncWorldbook } from "./worldbook.js";
 
@@ -69,6 +70,33 @@ function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
 
+function renderToggleRow({ title, desc = "", attrs = "", checked = false }) {
+  return `
+    <div class="nl4-setting-row">
+      <div class="nl4-setting-info">
+        <div class="nl4-setting-title">${esc(title)}</div>
+        ${desc ? `<div class="nl4-setting-desc">${esc(desc)}</div>` : ""}
+      </div>
+      <div class="nl4-setting-ctrl">
+        <label class="nl4-switch">
+          <input type="checkbox" ${attrs} ${checked ? "checked" : ""}>
+          <span class="nl4-slider"></span>
+        </label>
+      </div>
+    </div>`;
+}
+
+function renderControlRow({ title, desc = "", controlHtml = "" }) {
+  return `
+    <div class="nl4-setting-row">
+      <div class="nl4-setting-info">
+        <div class="nl4-setting-title">${esc(title)}</div>
+        ${desc ? `<div class="nl4-setting-desc">${esc(desc)}</div>` : ""}
+      </div>
+      <div class="nl4-setting-ctrl">${controlHtml}</div>
+    </div>`;
+}
+
 export function mountUi(host, engine) {
   if (typeof document === "undefined") {
     return { open() {}, close() {}, toggle() {}, render() {}, destroy() {} };
@@ -81,7 +109,6 @@ export function mountUi(host, engine) {
   let busyText = "";
   let theme = readJsonLS(THEME_KEY, "dark") === "light" ? "light" : "dark";
 
-  // Root container
   let root = document.getElementById("nl4-root");
   if (root) root.remove();
   root = document.createElement("div");
@@ -95,11 +122,11 @@ export function mountUi(host, engine) {
   orb.id = "nl4-orb";
   orb.type = "button";
   orb.className = "nl4-orb";
-  orb.title = `拖动移动 · 点击打开 ${PLUGIN_NAME}`;
+  orb.title = `拖动移动 · 轻点开关 ${PLUGIN_NAME}`;
   orb.innerHTML = `${GLOBE_SVG}<span class="nl4-orb-dot" id="nl4-orb-dot"></span>`;
   root.appendChild(orb);
 
-  // 2. Draggable & Resizable Book-Ledger Floating Panel (Bifa-inspired)
+  // 2. Draggable & Resizable Book-Ledger Floating Panel
   const panel = document.createElement("div");
   panel.id = "nl4-panel";
   panel.className = "nl4-panel nl4-hidden";
@@ -107,18 +134,24 @@ export function mountUi(host, engine) {
   panel.setAttribute("aria-label", PLUGIN_NAME);
   root.appendChild(panel);
 
-  // Apply saved orb position (default bottom-right)
-  const applyOrbPos = (pos) => {
+  const applyOrbPos = (pos, snapEdge = false) => {
     const vw = window.innerWidth || 1280;
     const vh = window.innerHeight || 800;
-    const left = clamp(pos?.left ?? vw - 68, 8, Math.max(8, vw - 56));
-    const top = clamp(pos?.top ?? vh - 128, 8, Math.max(8, vh - 56));
-    orb.style.left = `${left}px`;
-    orb.style.top = `${top}px`;
+    const margin = 10;
+    const orbW = 48;
+    let left = clamp(pos?.left ?? vw - orbW - 14, margin, Math.max(margin, vw - orbW - margin));
+    const top = clamp(pos?.top ?? vh - 128, margin, Math.max(margin, vh - orbW - margin));
+    // Soft magnetic edge snap when released within 44px of left or right screen edge
+    if (snapEdge) {
+      if (left <= 44) left = margin;
+      else if (vw - (left + orbW) <= 44) left = vw - orbW - margin;
+    }
+    orb.style.left = `${Math.round(left)}px`;
+    orb.style.top = `${Math.round(top)}px`;
+    return { left: Math.round(left), top: Math.round(top) };
   };
-  applyOrbPos(readJsonLS(POS_ORB_KEY));
+  applyOrbPos(readJsonLS(POS_ORB_KEY), false);
 
-  // Apply saved or centered window position/size
   const centerPanel = () => {
     const vw = window.innerWidth || 1280;
     const vh = window.innerHeight || 800;
@@ -143,66 +176,100 @@ export function mountUi(host, engine) {
     const h = clamp(rect.height || 680, 420, Math.max(420, vh - 24));
     const left = clamp(rect.left, 6, Math.max(6, vw - 140));
     const top = clamp(rect.top, 6, Math.max(6, vh - 80));
-    panel.style.left = `${left}px`;
-    panel.style.top = `${top}px`;
-    panel.style.width = `${w}px`;
-    panel.style.height = `${h}px`;
+    panel.style.left = `${Math.round(left)}px`;
+    panel.style.top = `${Math.round(top)}px`;
+    panel.style.width = `${Math.round(w)}px`;
+    panel.style.height = `${Math.round(h)}px`;
   };
   applyWinRect(readJsonLS(POS_WIN_KEY));
 
-  // --- Orb Drag vs Click (Pointer Events: works on desktop mouse + mobile touch!) ---
+  // Keep orb & panel visible when viewport resizes or phone rotates
+  const onViewportResize = () => {
+    const or = orb.getBoundingClientRect();
+    if (or.width > 0) applyOrbPos({ left: or.left, top: or.top }, false);
+    if (isOpen) {
+      const pr = panel.getBoundingClientRect();
+      applyWinRect({ left: pr.left, top: pr.top, width: pr.width, height: pr.height });
+    }
+  };
+  window.addEventListener("resize", onViewportResize);
+
+  // --- Silky GPU-Accelerated Orb Drag (rAF + translate3d + Soft Magnetic Edge Snap) ---
   {
-    let dragging = false;
-    let moved = false;
-    let startX = 0;
-    let startY = 0;
-    let origLeft = 0;
-    let origTop = 0;
+    let drag = null;
+    let rafId = 0;
+    let pendingDx = 0;
+    let pendingDy = 0;
 
     orb.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 && e.pointerType === "mouse") return;
-      dragging = true;
-      moved = false;
-      startX = e.clientX;
-      startY = e.clientY;
       const r = orb.getBoundingClientRect();
-      origLeft = r.left;
-      origTop = r.top;
+      drag = {
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        origLeft: r.left,
+        origTop: r.top,
+        moved: false
+      };
+      pendingDx = 0;
+      pendingDy = 0;
       orb.setPointerCapture?.(e.pointerId);
     });
 
     orb.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
-      const dx = e.clientX - startX;
-      const dy = e.clientY - startY;
-      if (!moved && Math.hypot(dx, dy) > 5) {
-        moved = true;
+      if (!drag || e.pointerId !== drag.pointerId) return;
+      const dx = e.clientX - drag.startX;
+      const dy = e.clientY - drag.startY;
+      if (!drag.moved && Math.hypot(dx, dy) > 5) {
+        drag.moved = true;
         orb.classList.add("dragging");
       }
-      if (moved) {
-        applyOrbPos({ left: origLeft + dx, top: origTop + dy });
+      if (!drag.moved) return;
+      const vw = window.innerWidth || 1280;
+      const vh = window.innerHeight || 800;
+      pendingDx = clamp(drag.origLeft + dx, 8, vw - 56) - drag.origLeft;
+      pendingDy = clamp(drag.origTop + dy, 8, vh - 56) - drag.origTop;
+      if (!rafId) {
+        rafId = requestAnimationFrame(() => {
+          rafId = 0;
+          if (drag?.moved) {
+            orb.style.transform = `translate3d(${pendingDx}px, ${pendingDy}px, 0) scale(0.95)`;
+          }
+        });
       }
     });
 
-    const finishOrbDrag = () => {
-      if (!dragging) return;
-      dragging = false;
+    const finishOrb = (e) => {
+      if (!drag || e.pointerId !== drag.pointerId) return;
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      const wasMoved = drag.moved;
+      const finalLeft = drag.origLeft + pendingDx;
+      const finalTop = drag.origTop + pendingDy;
+      drag = null;
+      orb.style.transform = "";
       orb.classList.remove("dragging");
-      if (moved) {
-        const r = orb.getBoundingClientRect();
-        writeJsonLS(POS_ORB_KEY, { left: Math.round(r.left), top: Math.round(r.top) });
+      if (wasMoved) {
+        const snapped = applyOrbPos({ left: finalLeft, top: finalTop }, true);
+        writeJsonLS(POS_ORB_KEY, snapped);
       } else {
         toggle();
       }
     };
-    orb.addEventListener("pointerup", finishOrbDrag);
-    orb.addEventListener("pointercancel", finishOrbDrag);
+    orb.addEventListener("pointerup", finishOrb);
+    orb.addEventListener("pointercancel", finishOrb);
   }
 
-  // --- Window Drag (by topbar) & Resize (by corner handle) ---
+  // --- Silky GPU-Accelerated Window Drag (translate3d + rAF + Pointer Capture) & Resize ---
   {
     let winDrag = null;
     let winResize = null;
+    let rafId = 0;
+    let dx = 0;
+    let dy = 0;
 
     panel.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 && e.pointerType === "mouse") return;
@@ -210,7 +277,9 @@ export function mountUi(host, engine) {
       const resizeHandle = e.target.closest(".nl4-resize");
       if (resizeHandle) {
         const r = panel.getBoundingClientRect();
-        winResize = { startX: e.clientX, startY: e.clientY, w: r.width, h: r.height };
+        winResize = { pointerId: e.pointerId, el: resizeHandle, startX: e.clientX, startY: e.clientY, w: r.width, h: r.height };
+        resizeHandle.setPointerCapture?.(e.pointerId);
+        panel.classList.add("dragging");
         e.preventDefault();
         return;
       }
@@ -218,46 +287,74 @@ export function mountUi(host, engine) {
       const bar = e.target.closest(".nl4-topbar");
       if (bar && !e.target.closest("button, input, select, a")) {
         const r = panel.getBoundingClientRect();
-        winDrag = { startX: e.clientX, startY: e.clientY, left: r.left, top: r.top, bar };
+        winDrag = { pointerId: e.pointerId, bar, startX: e.clientX, startY: e.clientY, left: r.left, top: r.top };
+        dx = 0;
+        dy = 0;
+        bar.setPointerCapture?.(e.pointerId);
         bar.classList.add("dragging");
+        panel.classList.add("dragging");
         e.preventDefault();
       }
     });
 
-    window.addEventListener("pointermove", (e) => {
-      if (winDrag) {
+    panel.addEventListener("pointermove", (e) => {
+      if (winDrag && e.pointerId === winDrag.pointerId) {
         const vw = window.innerWidth || 1280;
         const vh = window.innerHeight || 800;
-        const left = clamp(winDrag.left + (e.clientX - winDrag.startX), -200, vw - 120);
-        const top = clamp(winDrag.top + (e.clientY - winDrag.startY), 0, vh - 60);
-        panel.style.left = `${left}px`;
-        panel.style.top = `${top}px`;
-      } else if (winResize) {
+        dx = clamp(winDrag.left + (e.clientX - winDrag.startX), -220, vw - 140) - winDrag.left;
+        dy = clamp(winDrag.top + (e.clientY - winDrag.startY), 0, vh - 60) - winDrag.top;
+        if (!rafId) {
+          rafId = requestAnimationFrame(() => {
+            rafId = 0;
+            if (winDrag) panel.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
+          });
+        }
+      } else if (winResize && e.pointerId === winResize.pointerId) {
         const vw = window.innerWidth || 1280;
         const vh = window.innerHeight || 800;
-        const w = clamp(winResize.w + (e.clientX - winResize.startX), 560, vw - 20);
-        const h = clamp(winResize.h + (e.clientY - winResize.startY), 420, vh - 20);
-        panel.style.width = `${w}px`;
-        panel.style.height = `${h}px`;
+        const nextW = clamp(winResize.w + (e.clientX - winResize.startX), 560, vw - 20);
+        const nextH = clamp(winResize.h + (e.clientY - winResize.startY), 420, vh - 20);
+        if (!rafId) {
+          rafId = requestAnimationFrame(() => {
+            rafId = 0;
+            if (winResize) {
+              panel.style.width = `${Math.round(nextW)}px`;
+              panel.style.height = `${Math.round(nextH)}px`;
+            }
+          });
+        }
       }
     });
 
-    const endWinAction = () => {
-      if (winDrag || winResize) {
-        winDrag?.bar?.classList.remove("dragging");
+    const endWinAction = (e) => {
+      if (winDrag && e.pointerId === winDrag.pointerId) {
+        if (rafId) {
+          cancelAnimationFrame(rafId);
+          rafId = 0;
+        }
+        const finalLeft = Math.round(winDrag.left + dx);
+        const finalTop = Math.round(winDrag.top + dy);
+        winDrag.bar.classList.remove("dragging");
+        panel.classList.remove("dragging");
+        panel.style.transform = "";
+        panel.style.left = `${finalLeft}px`;
+        panel.style.top = `${finalTop}px`;
         const r = panel.getBoundingClientRect();
-        writeJsonLS(POS_WIN_KEY, {
-          left: Math.round(r.left),
-          top: Math.round(r.top),
-          width: Math.round(r.width),
-          height: Math.round(r.height)
-        });
+        writeJsonLS(POS_WIN_KEY, { left: finalLeft, top: finalTop, width: Math.round(r.width), height: Math.round(r.height) });
         winDrag = null;
+      } else if (winResize && e.pointerId === winResize.pointerId) {
+        if (rafId) {
+          cancelAnimationFrame(rafId);
+          rafId = 0;
+        }
+        panel.classList.remove("dragging");
+        const r = panel.getBoundingClientRect();
+        writeJsonLS(POS_WIN_KEY, { left: Math.round(r.left), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) });
         winResize = null;
       }
     };
-    window.addEventListener("pointerup", endWinAction);
-    window.addEventListener("pointercancel", endWinAction);
+    panel.addEventListener("pointerup", endWinAction);
+    panel.addEventListener("pointercancel", endWinAction);
   }
 
   const syncOrbStatus = () => {
@@ -282,7 +379,6 @@ export function mountUi(host, engine) {
 
   const toggle = () => (isOpen ? close() : open());
 
-  // Secondary menu entry points (ST #extensionsMenu & #extensions_settings2)
   const mountStEntryPoints = () => {
     const menu = document.getElementById("extensionsMenu");
     if (menu && !document.getElementById("nl4-ext-menu-item")) {
@@ -305,7 +401,7 @@ export function mountUi(host, engine) {
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
           </div>
           <div class="inline-drawer-content">
-            <p style="margin:6px 0;opacity:.8;font-size:12px">点击屏幕上的「小地球」悬浮球或下方按钮打开可拖动主面板。</p>
+            <p style="margin:6px 0;opacity:.8;font-size:12px">轻点屏幕上的「小地球」悬浮球或下方按钮打开可拖动浮窗。</p>
             <button type="button" class="menu_button" id="nl4-open-from-drawer">打开「活世界」浮窗</button>
           </div>
         </div>`;
@@ -314,8 +410,8 @@ export function mountUi(host, engine) {
     }
   };
 
-  const renderTopbar = (settings, chatState) => `
-    <div class="nl4-topbar" title="按住标题栏可拖动窗口，双击居中复位">
+  const renderTopbar = (_settings, chatState) => `
+    <div class="nl4-topbar" title="按住标题栏自由拖动，双击居中复位">
       <div class="nl4-brand">
         <div class="nl4-brand-globe">${GLOBE_SVG}</div>
         <div>
@@ -327,17 +423,17 @@ export function mountUi(host, engine) {
         <button type="button" class="nl4-btn nl4-btn-primary" data-act="run-now" ${busyText ? "disabled" : ""}>
           ${busyText ? esc(busyText) : "立即更新"}
         </button>
-        <button type="button" class="nl4-btn nl4-btn-sm" data-act="toggle-theme" title="切换深色/浅色宣纸主题">${theme === "dark" ? "☀ 宣纸" : "🌙 墨砚"}</button>
+        <button type="button" class="nl4-btn nl4-btn-sm" data-act="toggle-theme" title="切换墨砚/宣纸主题">${theme === "dark" ? "☀ 宣纸" : "🌙 墨砚"}</button>
         <button type="button" class="nl4-btn nl4-btn-sm" data-act="center-win" title="窗口居中复位">复位</button>
         <button type="button" class="nl4-btn nl4-btn-sm" data-act="close" aria-label="关闭">✕</button>
       </div>
     </div>`;
 
   const renderRightBookTabs = (chatState) => {
-    const npcCount = Object.keys(chatState.npcs || {}).length;
+    const livingCount = Object.keys(chatState.npcs || {}).filter((n) => !isDeceased(chatState, n)).length;
     const activeClocks = (chatState.world?.clocks || []).filter((c) => c.status === "active" || c.status === "triggered").length;
     const tabs = [
-      { id: "npcs", label: "人物", badge: npcCount || "" },
+      { id: "npcs", label: "人物", badge: livingCount || "" },
       { id: "world", label: "活世界", badge: activeClocks || "" },
       { id: "api", label: "接口", badge: "" },
       { id: "settings", label: "设置", badge: "" }
@@ -369,46 +465,64 @@ export function mountUi(host, engine) {
         ${
           lastTok
             ? `<span class="nl4-foot-right">上次约 ${esc(lastTok.tokens)} Token（世界书 ${esc(lastTok.worldbookChars)} 字 · 卡片 ${esc(lastTok.cardChars)} 字）</span>`
-            : `<span class="nl4-foot-right">拖动标题栏可移动窗口 · 右下角可缩放</span>`
+            : `<span class="nl4-foot-right">拖动标题栏可移动 · 右下角可缩放</span>`
         }
       </div>`;
   };
 
-  // Tab 1: Bifa-style Master/Detail Characters View
+  // Tab 1: Master/Detail Characters + Dedicated Deceased Memorial Archive
   const renderNpcsTab = (settings, chatState) => {
     const recent = host.chat.getRecentAssistantMessages(1)[0]?.message || "";
     const inScene = new Set(detectInSceneNpcs(recent, chatState.npcs));
-    const names = Object.keys(chatState.npcs || {});
+    const godView = settings.livingWorld?.godView === true;
+    const allNames = Object.keys(chatState.npcs || {});
+    const livingNames = allNames.filter((n) => !isDeceased(chatState, n));
+    const deadNames = allNames.filter((n) => isDeceased(chatState, n));
+
     if (!selectedNpc || !chatState.npcs[selectedNpc]) {
-      selectedNpc = names[0] || null;
+      selectedNpc = livingNames[0] || deadNames[0] || null;
     }
 
-    const rosterHtml = names.length
-      ? names
-          .map((name) => {
-            const card = chatState.npcs[name];
-            const dead = isDeceased(chatState, name);
-            return `
-              <button type="button" class="nl4-roster-item ${selectedNpc === name ? "active" : ""} ${dead ? "dead" : ""}" data-select-npc="${esc(name)}">
-                <div class="nl4-roster-top">
-                  <span class="nl4-roster-name">${esc(name)}</span>
-                  <span>
-                    ${inScene.has(name) && !dead ? '<span class="nl4-badge nl4-badge-scene">在场</span>' : ""}
-                    ${dead ? '<span class="nl4-badge nl4-badge-dead">已故</span>' : ""}
-                    ${card.tracked === false ? '<span class="nl4-badge">暂停</span>' : ""}
-                  </span>
-                </div>
-                <div class="nl4-roster-sub">${esc(card["位置"] || "未知")} · ${esc(card["当前在做"] || "—")}</div>
-              </button>`;
-          })
-          .join("")
-      : `<div class="nl4-muted" style="padding:12px 4px">暂无角色</div>`;
+    const renderRosterItem = (name, isDeadRow) => {
+      const card = chatState.npcs[name];
+      const deadInfo = chatState.world?.deceased?.[name];
+      const hideSpoiler = isDeadRow && deadInfo && !deadInfo.revealed && !godView;
+      const subText = hideSpoiler
+        ? "暂无最新动向（沉浸防剧透中）"
+        : `${card["位置"] || "未知"} · ${card["当前在做"] || "—"}`;
+      return `
+        <button type="button" class="nl4-roster-item ${selectedNpc === name ? "active" : ""} ${isDeadRow && !hideSpoiler ? "dead" : ""}" data-select-npc="${esc(name)}">
+          <div class="nl4-roster-top">
+            <span class="nl4-roster-name">${esc(name)}</span>
+            <span>
+              ${inScene.has(name) && !isDeadRow ? '<span class="nl4-badge nl4-badge-scene">在场</span>' : ""}
+              ${isDeadRow && !hideSpoiler ? '<span class="nl4-badge nl4-badge-dead">已故</span>' : ""}
+              ${card.tracked === false ? '<span class="nl4-badge">暂停</span>' : ""}
+            </span>
+          </div>
+          <div class="nl4-roster-sub">${esc(subText)}</div>
+        </button>`;
+    };
 
-    let detailHtml = `<div class="nl4-empty">点击左侧角色查看幕后详情，或点击上方「手动添加角色」创建追踪目标。</div>`;
+    const rosterHtml =
+      (livingNames.length
+        ? livingNames.map((n) => renderRosterItem(n, false)).join("")
+        : `<div class="nl4-muted" style="padding:8px 4px">暂无在世角色</div>`) +
+      (deadNames.length
+        ? `<details class="nl4-roster-group" ${deadNames.includes(selectedNpc) ? "open" : ""}>
+            <summary>🕊️ 已故归档（${deadNames.length}）</summary>
+            <div style="display:flex;flex-direction:column;gap:6px">
+              ${deadNames.map((n) => renderRosterItem(n, true)).join("")}
+            </div>
+          </details>`
+        : "");
+
+    let detailHtml = `<div class="nl4-empty">点击左侧角色查看幕后详情，或在上方手动添加追踪角色。</div>`;
     if (selectedNpc && chatState.npcs[selectedNpc]) {
       const name = selectedNpc;
       const card = chatState.npcs[name];
-      const dead = isDeceased(chatState, name);
+      const deadInfo = chatState.world?.deceased?.[name] || null;
+      const hideSpoiler = Boolean(deadInfo && !deadInfo.revealed && !godView);
       const tracked = card.tracked !== false;
       const aliasesStr = (card.aliases || []).join("、");
       const promises = Array.isArray(card["未完成事项"]) ? card["未完成事项"] : [];
@@ -441,13 +555,38 @@ export function mountUi(host, engine) {
             </div>
           </div>`;
       } else {
+        const deathBannerHtml = deadInfo
+          ? hideSpoiler
+            ? `<div class="nl4-now-banner" style="margin:10px 0">
+                <div><b>状态遮罩中（沉浸防剧透）</b></div>
+                <div class="nl4-muted" style="margin-top:2px">主角暂未获知该角色最新遭遇，亲临现场或开启「上帝视角」后可见。</div>
+              </div>`
+            : `<div class="nl4-death-banner">
+                <div class="nl4-card-head">
+                  <b>🕊️ 已故档案 · ${esc(deadInfo.reason || "已离世")}</b>
+                  <button type="button" class="nl4-btn nl4-btn-primary nl4-btn-sm" data-act="revive-npc" data-npc="${esc(name)}">🕊️ 复活 / 撤销死亡</button>
+                </div>
+                <div class="nl4-muted" style="margin-top:4px">
+                  时间：${esc(deadInfo.at || "未知")} · 地点：${esc(deadInfo.location || "未知")} · ${deadInfo.revealed ? "主角已知晓" : "尚未揭晓（上帝视角可见）"}
+                </div>
+                ${
+                  Array.isArray(deadInfo.traces) && deadInfo.traces.length
+                    ? `<div style="margin-top:6px;font-size:12.5px"><b>现场遗留痕迹：</b><ul class="nl4-trace-list">${deadInfo.traces.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>`
+                    : ""
+                }
+              </div>`
+          : `<div class="nl4-now-banner" style="margin:10px 0">
+              <div><b>此刻正在：</b>${esc(card["当前在做"] || "暂无记录")}</div>
+              <div class="nl4-muted" style="margin-top:2px">位置：${esc(card["位置"] || "未知")} · 状态：${esc(card["当前状态"] || "—")}</div>
+            </div>`;
+
         detailHtml = `
           <div class="nl4-box">
             <div class="nl4-card-head">
               <div class="nl4-row-gap">
                 <h3 class="nl4-h3">${esc(name)}</h3>
-                ${inScene.has(name) && !dead ? '<span class="nl4-badge nl4-badge-scene">在场</span>' : ""}
-                ${dead ? '<span class="nl4-badge nl4-badge-dead">已故</span>' : ""}
+                ${inScene.has(name) && !deadInfo ? '<span class="nl4-badge nl4-badge-scene">在场</span>' : ""}
+                ${deadInfo && !hideSpoiler ? '<span class="nl4-badge nl4-badge-dead">已故</span>' : ""}
                 ${!tracked ? '<span class="nl4-badge">已暂停</span>' : ""}
                 ${aliasesStr ? `<span class="nl4-muted">别名：${esc(aliasesStr)}</span>` : ""}
               </div>
@@ -458,10 +597,7 @@ export function mountUi(host, engine) {
               </div>
             </div>
 
-            <div class="nl4-now-banner" style="margin:10px 0">
-              <div><b>此刻正在：</b>${esc(card["当前在做"] || "暂无记录")}</div>
-              <div class="nl4-muted" style="margin-top:2px">位置：${esc(card["位置"] || "未知")} · 状态：${esc(card["当前状态"] || "—")}</div>
-            </div>
+            ${deathBannerHtml}
 
             <dl class="nl4-dl">
               <dt>身份锚点</dt><dd>${esc(card["身份锚点"] || "—")}</dd>
@@ -488,18 +624,20 @@ export function mountUi(host, engine) {
 
     return `
       <div class="nl4-section">
-        <div class="nl4-bar">
-          <label class="nl4-check"><input type="checkbox" data-setting="enabled" ${settings.enabled ? "checked" : ""}> 启用插件</label>
-          <label class="nl4-check"><input type="checkbox" data-setting="autoUpdate" ${settings.autoUpdate ? "checked" : ""}> 回复后自动更新</label>
-          <label class="nl4-check"><input type="checkbox" data-setting="autoTrack" ${settings.autoTrack ? "checked" : ""}> 自动识别新建 NPC</label>
+        <div class="nl4-box">
+          <div class="nl4-setting-list">
+            ${renderToggleRow({ title: "启用 NPC Life 后台引擎", desc: "总开关；关闭后不会自动请求副 API 或向主模型注入提示词", attrs: 'data-setting="enabled"', checked: settings.enabled })}
+            ${renderToggleRow({ title: "AI 回复后自动更新角色", desc: "每轮新剧情结束后自动用副 API 推进在场与幕后角色状态", attrs: 'data-setting="autoUpdate"', checked: settings.autoUpdate })}
+            ${renderToggleRow({ title: "自动识别并建档新 NPC", desc: "关闭后仅更新已追踪名单中的角色，不再为新出场人物建卡", attrs: 'data-setting="autoTrack"', checked: settings.autoTrack })}
+          </div>
         </div>
 
-        <details class="nl4-box" ${names.length === 0 ? "open" : ""}>
+        <details class="nl4-box" ${allNames.length === 0 ? "open" : ""}>
           <summary>＋ 手动添加角色</summary>
           <div class="nl4-form-grid" style="margin-top:8px">
             <label>角色名 *<input class="nl4-input" id="nl4-add-name" placeholder="如：林霜"></label>
             <label>别名（可选）<input class="nl4-input" id="nl4-add-aliases" placeholder="如：霜姐、林铁匠"></label>
-            <label class="nl4-span-2">身份锚点<input class="nl4-input" id="nl4-add-anchor" placeholder="一句定型：身份/性格底色/核心执念"></label>
+            <label class="nl4-span-2">身份锚点<input class="nl4-input" id="nl4-add-anchor" placeholder="一句定型：身份/性格底色/典型一天作息"></label>
             <label>初始位置<input class="nl4-input" id="nl4-add-loc" placeholder="如：城北铁匠铺"></label>
             <label>当前在做<input class="nl4-input" id="nl4-add-doing" placeholder="如：整理锻炉"></label>
           </div>
@@ -513,13 +651,31 @@ export function mountUi(host, engine) {
       </div>`;
   };
 
-  // Tab 2: Living World & Fate Clocks
+  // Tab 2: Living World, World Trends (0-cost), & Fate Clocks
   const renderWorldTab = (settings, chatState) => {
     const lw = settings.livingWorld;
     const w = chatState.world;
     const clocks = w.clocks || [];
+    const trends = (w.trends || []).filter((t) => t && t.status === "active");
     const knows = (w.ledger?.knows || []).filter((k) => k.status !== "done").slice(-10).reverse();
     const queue = (w.queue || []).filter((q) => q.status === "pending");
+
+    const trendsHtml = trends.length
+      ? trends
+          .map(
+            (t) => `
+          <div class="nl4-card">
+            <div class="nl4-card-head">
+              <div><span class="nl4-badge">${esc(t.scope || "公开")}</span> <b>${esc(t.location || "全域")}</b> · ${esc(t.content)}</div>
+              <div class="nl4-row-gap">
+                <button type="button" class="nl4-btn nl4-btn-sm" data-act="settle-trend" data-id="${esc(t.id)}">已平息</button>
+                <button type="button" class="nl4-btn nl4-btn-sm nl4-btn-danger" data-act="del-trend" data-id="${esc(t.id)}">删</button>
+              </div>
+            </div>
+          </div>`
+          )
+          .join("")
+      : `<div class="nl4-muted">当前无活跃公共局势。正文发生重大公开事件时会自动随更新记录（0 额外请求），也可手动添加。</div>`;
 
     const clocksHtml = clocks.length
       ? clocks
@@ -551,21 +707,39 @@ export function mountUi(host, engine) {
               </div>`;
           })
           .join("")
-      : `<div class="nl4-muted">暂无命运钟。可手动添加，或点击「扫描世界书危机」自动提取。</div>`;
+      : `<div class="nl4-muted">暂无命运钟。可手动添加、扫描世界书，或开启「正文危机自动挂钟」。</div>`;
 
     return `
       <div class="nl4-section">
         <div class="nl4-box">
-          <div class="nl4-bar">
-            <label class="nl4-check"><input type="checkbox" data-lw="enabled" ${lw.enabled ? "checked" : ""}> 启用活世界（防全知账本 / 传闻 / 偶遇）</label>
-            <label class="nl4-check"><input type="checkbox" data-lw="fateClocks" ${lw.fateClocks ? "checked" : ""}> 启用命运钟</label>
-            <label class="nl4-check"><input type="checkbox" data-lw="godView" ${lw.godView ? "checked" : ""}> 上帝视角（显示未揭晓剧透）</label>
+          <div class="nl4-setting-list">
+            ${renderToggleRow({ title: "启用活世界引擎", desc: "开启防全知知情账本、本地传闻扩散与主动偶遇队列", attrs: 'data-lw="enabled"', checked: lw.enabled })}
+            ${renderToggleRow({ title: "启用轻量「世界近况」（0 额外请求）", desc: "记录封城/天灾/祭典等公共大事并同轮喂给幕后 NPC，保持大环境连贯", attrs: 'data-lw="worldTrendsEnabled"', checked: lw.worldTrendsEnabled !== false })}
+            ${renderToggleRow({ title: "启用命运钟与真实死亡后果", desc: "按剧情天数推进危机倒计时；死亡自动生成现场遗留痕迹并严防诈尸", attrs: 'data-lw="fateClocks"', checked: lw.fateClocks })}
+            ${renderToggleRow({ title: "正文危机自动挂命运钟（0 额外请求）", desc: "正文出现中毒/囚禁断粮/重伤垂危等限时危机时，由主更新顺带挂钟", attrs: 'data-lw="autoCreateClocksFromProse"', checked: lw.autoCreateClocksFromProse !== false })}
+            ${renderToggleRow({ title: "上帝视角（关闭防剧透遮罩）", desc: "开启后直接在面板看到未揭晓的死亡与变故；关闭则等主角亲临现场揭晓", attrs: 'data-lw="godView"', checked: lw.godView })}
+            ${renderToggleRow({ title: "按角色隔离侧写（进阶防全知）", desc: "每轮按单个角色隔离上下文独立请求副 API（会增加本轮请求次数）", attrs: 'data-lw="isolatedNpcCalls"', checked: lw.isolatedNpcCalls })}
+            ${renderControlRow({ title: "隔离侧写单轮人数上限", desc: "限制开启隔离侧写时每轮最多更新多少个角色（1~6 人）", controlHtml: `<input class="nl4-input nl4-num" type="number" min="1" max="6" data-lw="isolatedMaxNpcs" value="${esc(lw.isolatedMaxNpcs)}">` })}
+            ${renderToggleRow({ title: "自动增量扫描世界书危机", desc: "按条目哈希增量提取世界书里的潜伏命运钟（默认关，可下方手动扫）", attrs: 'data-lw="autoScanWorldbook"', checked: lw.autoScanWorldbook })}
           </div>
-          <div class="nl4-bar" style="margin-top:8px">
-            <label class="nl4-check"><input type="checkbox" data-lw="isolatedNpcCalls" ${lw.isolatedNpcCalls ? "checked" : ""}> 按角色隔离侧写（每轮按角色独立请求）</label>
-            <label class="nl4-inline-num">单轮上限 <input class="nl4-input nl4-num" type="number" min="1" max="6" data-lw="isolatedMaxNpcs" value="${esc(lw.isolatedMaxNpcs)}"></label>
-            <label class="nl4-check"><input type="checkbox" data-lw="autoScanWorldbook" ${lw.autoScanWorldbook ? "checked" : ""}> 自动增量扫描世界书危机</label>
+        </div>
+
+        <div class="nl4-box">
+          <div class="nl4-card-head">
+            <h3 class="nl4-h3">🌍 世界近况（公共局势 · 最多 5 条活跃）</h3>
           </div>
+          <div class="nl4-form-grid" style="margin:10px 0">
+            <label>影响区域<input class="nl4-input" id="nl4-tr-loc" placeholder="如：城北 / 全域"></label>
+            <label>传播范围
+              <select class="nl4-input" id="nl4-tr-scope">
+                <option value="公开">公开公告 / 街坊皆知</option>
+                <option value="传闻">坊间风声 / 传闻</option>
+              </select>
+            </label>
+            <label class="nl4-span-2">局势内容 *<input class="nl4-input" id="nl4-tr-content" placeholder="如：官府宣布城北宵禁三日，商旅进出受限"></label>
+          </div>
+          <div style="margin-bottom:8px"><button type="button" class="nl4-btn nl4-btn-primary nl4-btn-sm" data-act="add-trend">添加世界近况</button></div>
+          <div class="nl4-card-list">${trendsHtml}</div>
         </div>
 
         <div class="nl4-box">
@@ -607,7 +781,7 @@ export function mountUi(host, engine) {
       </div>`;
   };
 
-  // Tab 3: Sub-API & Custom Prompt Segments
+  // Tab 3: Sub-API & Prompt Controls (One-per-row Toggles)
   const renderApiTab = (settings) => {
     const api = settings.api;
     const segs = settings.customSegments || [];
@@ -618,7 +792,13 @@ export function mountUi(host, engine) {
             (s, idx) => `
           <div class="nl4-card">
             <div class="nl4-card-head">
-              <label class="nl4-check"><input type="checkbox" data-seg-toggle="${idx}" ${s.enabled !== false ? "checked" : ""}> <b>${esc(s.name || `段 ${idx + 1}`)}</b></label>
+              <div class="nl4-row-gap">
+                <label class="nl4-switch" style="transform:scale(0.84)">
+                  <input type="checkbox" data-seg-toggle="${idx}" ${s.enabled !== false ? "checked" : ""}>
+                  <span class="nl4-slider"></span>
+                </label>
+                <b>${esc(s.name || `段 ${idx + 1}`)}</b>
+              </div>
               <div class="nl4-row-gap">
                 <span class="nl4-badge">${esc(s.role)}</span>
                 <span class="nl4-badge">${esc(s.position)}</span>
@@ -629,7 +809,7 @@ export function mountUi(host, engine) {
           </div>`
           )
           .join("")
-      : `<div class="nl4-muted">暂无自定义提示词 / 破限段。</div>`;
+      : `<div class="nl4-muted">暂无自定义附加提示词段。</div>`;
 
     return `
       <div class="nl4-section">
@@ -646,24 +826,24 @@ export function mountUi(host, engine) {
             <label>模型名称 *<input class="nl4-input" data-api="model" value="${esc(api.model)}" placeholder="如：deepseek-chat / gemini-2.5-flash"></label>
             <label>温度<input class="nl4-input" type="number" step="0.1" min="0" max="2" data-api="temperature" value="${esc(api.temperature)}"></label>
             <label>最大输出 Token<input class="nl4-input" type="number" min="256" max="16384" step="256" data-api="maxTokens" value="${esc(api.maxTokens)}"></label>
-            <label>超时秒数<input class="nl4-input" type="number" min="15" max="240" data-api="timeoutSec" value="${esc(api.timeoutSec)}"></label>
-            <label class="nl4-check" style="align-self:end">
-              <input type="checkbox" data-api="direct" ${api.direct !== false ? "checked" : ""}> 浏览器直连（推荐，关闭走酒馆转发）
-            </label>
+          </div>
+          <div class="nl4-setting-list" style="margin-top:8px">
+            ${renderControlRow({ title: "请求超时秒数", desc: "超过设定秒数自动中止，避免后台卡死（15~240 秒）", controlHtml: `<input class="nl4-input nl4-num" type="number" min="15" max="240" data-api="timeoutSec" value="${esc(api.timeoutSec)}">` })}
+            ${renderToggleRow({ title: "浏览器直连副 API（推荐）", desc: "开启后直接请求上述端点；若遇跨域 CORS 拦截再关闭改走酒馆转发", attrs: 'data-api="direct"', checked: api.direct !== false })}
           </div>
         </div>
 
         <div class="nl4-box">
           <div class="nl4-card-head">
-            <h3 class="nl4-h3">🧩 默认系统提示词（已保留原彼方核心去中心化 / 防全知 / 反雷同规则）</h3>
+            <h3 class="nl4-h3">🧩 默认系统提示词（保留去中心化 / 防全知 / 反雷同核心规则）</h3>
             <div class="nl4-row-gap">
               <button type="button" class="nl4-btn nl4-btn-sm" data-act="copy-sys-prompt">📋 复制当前提示词</button>
               ${settings.customSystemPrompt ? '<button type="button" class="nl4-btn nl4-btn-sm" data-act="reset-sys-prompt">恢复内置默认</button>' : ""}
             </div>
           </div>
-          <div class="nl4-bar" style="margin-top:8px">
-            <label class="nl4-check"><input type="checkbox" data-setting="compactPrompt" ${settings.compactPrompt !== false ? "checked" : ""}> 精简快跑提示词（省 Token，关掉可切完整经典版）</label>
-            <label class="nl4-check"><input type="checkbox" data-setting="prefillJson" ${settings.prefillJson === true ? "checked" : ""}> 启用 JSON 预填充（Prefill，减少模型废话与拒答）</label>
+          <div class="nl4-setting-list" style="margin-top:6px">
+            ${renderToggleRow({ title: "精简快跑提示词", desc: "约 1100 字高信噪比核心规则，更快更省 Token；关闭可切完整经典详规", attrs: 'data-setting="compactPrompt"', checked: settings.compactPrompt !== false })}
+            ${renderToggleRow({ title: "启用 JSON 预填充（Prefill）", desc: "在请求末尾预填 { 引导模型直接出纯 JSON，减少废话与拒答", attrs: 'data-setting="prefillJson"', checked: settings.prefillJson === true })}
           </div>
           <details style="margin-top:8px">
             <summary class="nl4-muted" style="cursor:pointer">查看 / 自定义主系统提示词（当前：${settings.customSystemPrompt ? "已自定义" : settings.compactPrompt !== false ? "内置精简版" : "内置完整经典版"}）</summary>
@@ -676,11 +856,9 @@ export function mountUi(host, engine) {
         </div>
 
         <div class="nl4-box">
-          <div class="nl4-card-head">
-            <h3 class="nl4-h3">📌 自定义附加提示词段（可按位置插入副 API 请求）</h3>
-          </div>
+          <h3 class="nl4-h3">📌 自定义附加提示词段</h3>
           <div class="nl4-form-grid" style="margin:10px 0">
-            <label>段落名称<input class="nl4-input" id="nl4-seg-name" placeholder="如：破限段"></label>
+            <label>段落名称<input class="nl4-input" id="nl4-seg-name" placeholder="如：自定义破限 / 文风"></label>
             <label>角色
               <select class="nl4-input" id="nl4-seg-role">
                 <option value="system">system</option>
@@ -700,14 +878,14 @@ export function mountUi(host, engine) {
             <div style="display:flex;align-items:flex-end">
               <button type="button" class="nl4-btn nl4-btn-primary nl4-btn-sm" data-act="add-seg">添加段落</button>
             </div>
-            <label class="nl4-span-2">内容<textarea class="nl4-textarea" id="nl4-seg-content" rows="2" placeholder="填写插入副 API 的提示词内容..."></textarea></label>
+            <label class="nl4-span-2">内容<textarea class="nl4-textarea" id="nl4-seg-content" rows="2" placeholder="填写要插入副 API 的附加提示词..."></textarea></label>
           </div>
           <div class="nl4-card-list">${segsHtml}</div>
         </div>
       </div>`;
   };
 
-  // Tab 4: Worldbook Injection, Cost Fuse, & Diagnostics
+  // Tab 4: Worldbook, Cost Controls (One-per-row Toggles), & Diagnostics
   const renderSettingsTab = (settings) => {
     const wb = settings.worldbook;
     const cost = settings.cost;
@@ -738,45 +916,44 @@ export function mountUi(host, engine) {
             <h3 class="nl4-h3">📚 世界书读写与主模型注入</h3>
             <button type="button" class="nl4-btn nl4-btn-sm" data-act="sync-wb">立即同步世界书</button>
           </div>
-          <div class="nl4-form-grid" style="margin-top:10px">
-            <label>写入目标
-              <select class="nl4-input" data-wb="writeTarget">
-                <option value="chat" ${wb.writeTarget === "chat" ? "selected" : ""}>聊天世界书（推荐，群聊兼容）</option>
+          <div class="nl4-setting-list" style="margin-top:6px">
+            ${renderToggleRow({ title: "后台更新时读取世界书参考", desc: "按与当前 NPC 的相关度筛选设定条目喂给副 API", attrs: 'data-wb="readEnabled"', checked: wb.readEnabled !== false })}
+            ${renderControlRow({
+              title: "世界书写入目标",
+              desc: "群聊选主世界书时会自动平滑回退到聊天世界书",
+              controlHtml: `<select class="nl4-input nl4-select-sm" data-wb="writeTarget">
+                <option value="chat" ${wb.writeTarget === "chat" ? "selected" : ""}>聊天世界书（推荐）</option>
                 <option value="primary" ${wb.writeTarget === "primary" ? "selected" : ""}>角色卡主世界书</option>
                 <option value="off" ${wb.writeTarget === "off" ? "selected" : ""}>关闭写入</option>
-              </select>
-            </label>
-            <label>注入主模型模式
-              <select class="nl4-input" data-wb="injectMode">
-                <option value="full" ${wb.injectMode === "full" ? "selected" : ""}>全量注入（默认：全部核心字段）</option>
-                <option value="minimal" ${wb.injectMode === "minimal" ? "selected" : ""}>极简动态（仅注入：位置 / 当前在做 / 当前状态）</option>
+              </select>`
+            })}
+            ${renderControlRow({
+              title: "注入主模型字段模式",
+              desc: "搭配总结/数据库插件时推荐切「极简动态」，插件内部仍保留全量记录",
+              controlHtml: `<select class="nl4-input nl4-select-sm" data-wb="injectMode">
+                <option value="full" ${wb.injectMode === "full" ? "selected" : ""}>全量注入（默认）</option>
+                <option value="minimal" ${wb.injectMode === "minimal" ? "selected" : ""}>极简动态（仅位置/在做/状态）</option>
                 <option value="custom" ${wb.injectMode === "custom" ? "selected" : ""}>自定义勾选列</option>
-              </select>
-            </label>
-            <label class="nl4-check nl4-span-2">
-              <input type="checkbox" data-wb="readEnabled" ${wb.readEnabled !== false ? "checked" : ""}> 后台更新时读取世界书设定参考
-            </label>
+              </select>`
+            })}
           </div>
-          <div class="nl4-field-chips" style="margin-top:8px">
+          <div class="nl4-field-chips" style="margin-top:10px">
             ${WB_FIELD_DEFS.map(
               (f) => `<label class="nl4-chip"><input type="checkbox" data-wb-field="${esc(f.key)}" ${activeFields.includes(f.key) ? "checked" : ""}> ${esc(f.label)}</label>`
             ).join("")}
           </div>
-          <div class="nl4-muted" style="margin-top:6px">提示：切到「极简动态」后，承诺/关键事件仅保留在插件内部与面板，不再注入世界书，避免与总结/数据库冲突。</div>
         </div>
 
         <div class="nl4-box">
           <h3 class="nl4-h3">💰 成本熔断与省 Token</h3>
-          <div class="nl4-form-grid" style="margin-top:10px">
-            <label>每轮副 API 上限（0=纯本地）<input class="nl4-input" type="number" min="0" max="10" data-cost="maxSubApiCallsPerTurn" value="${esc(cost.maxSubApiCallsPerTurn)}"></label>
-            <label>世界书读取字数上限<input class="nl4-input" type="number" min="1000" max="30000" step="500" data-cost="worldbookCharCap" value="${esc(cost.worldbookCharCap)}"></label>
-            <label>单条正文字数上限（0=不截断）<input class="nl4-input" type="number" min="0" max="20000" step="500" data-cost="replyCharCap" value="${esc(cost.replyCharCap)}"></label>
-            <label>读取最近回复条数<input class="nl4-input" type="number" min="1" max="6" data-setting-num="recentReplyCount" value="${esc(settings.recentReplyCount)}"></label>
-          </div>
-          <div class="nl4-bar" style="margin-top:8px">
-            <label class="nl4-check"><input type="checkbox" data-cost="tokenSlimMode" ${cost.tokenSlimMode !== false ? "checked" : ""}> 智能省 Token 瘦身（世界书上限 / 人设一次性注入 / 紧凑 JSON）</label>
-            <label class="nl4-check"><input type="checkbox" data-cost="skipIdleTurns" ${cost.skipIdleTurns === true ? "checked" : ""}> 可选省钱：跳过无在场NPC且时间未推进的空转轮</label>
-            <label class="nl4-check"><input type="checkbox" data-setting="showFloatingButton" ${settings.showFloatingButton !== false ? "checked" : ""}> 显示悬浮「小地球」图标</label>
+          <div class="nl4-setting-list" style="margin-top:6px">
+            ${renderToggleRow({ title: "智能省 Token 瘦身", desc: "世界书相关度上限 + 人设一次性注入 + 紧凑 JSON + 缓存前缀（保留完整正文与状态卡）", attrs: 'data-cost="tokenSlimMode"', checked: cost.tokenSlimMode !== false })}
+            ${renderToggleRow({ title: "跳过无变化空转轮（可选省钱）", desc: "无在场 NPC 且剧情时间未推进时省 1 次请求；默认关以保持幕后每轮活跃", attrs: 'data-cost="skipIdleTurns"', checked: cost.skipIdleTurns === true })}
+            ${renderControlRow({ title: "每轮副 API 请求硬上限", desc: "设为 0 即纯本地零消耗模式，彻底防止意外刷爆额度", controlHtml: `<input class="nl4-input nl4-num" type="number" min="0" max="10" data-cost="maxSubApiCallsPerTurn" value="${esc(cost.maxSubApiCallsPerTurn)}">` })}
+            ${renderControlRow({ title: "世界书读取字数上限", desc: "控制单次喂给副 API 的世界书总量（1,000 ~ 30,000 字）", controlHtml: `<input class="nl4-input nl4-num" type="number" min="1000" max="30000" step="500" data-cost="worldbookCharCap" value="${esc(cost.worldbookCharCap)}">` })}
+            ${renderControlRow({ title: "单条正文字数上限（0 = 不截断）", desc: "默认 0 完整保留全部正文与状态栏，仅清思维链噪音", controlHtml: `<input class="nl4-input nl4-num" type="number" min="0" max="20000" step="500" data-cost="replyCharCap" value="${esc(cost.replyCharCap)}">` })}
+            ${renderControlRow({ title: "读取最近回复条数", desc: "每次后台更新附带最近几楼 AI 回复作为上下文（1~6 条）", controlHtml: `<input class="nl4-input nl4-num" type="number" min="1" max="6" data-setting-num="recentReplyCount" value="${esc(settings.recentReplyCount)}">` })}
+            ${renderToggleRow({ title: "显示屏幕悬浮「小地球」图标", desc: "关闭后仍可从酒馆魔法棒菜单或扩展设置里打开浮窗", attrs: 'data-setting="showFloatingButton"', checked: settings.showFloatingButton !== false })}
           </div>
         </div>
 
@@ -816,14 +993,12 @@ export function mountUi(host, engine) {
       `<div class="nl4-resize" title="拖拽缩放窗口"></div>`;
   };
 
-  // Double-click titlebar to re-center window
   panel.addEventListener("dblclick", (e) => {
     if (e.target.closest(".nl4-topbar") && !e.target.closest("button")) {
       centerPanel();
     }
   });
 
-  // Delegated click handler
   panel.addEventListener("click", async (e) => {
     const tabBtn = e.target.closest("[data-tab]");
     if (tabBtn) {
@@ -856,10 +1031,7 @@ export function mountUi(host, engine) {
     const act = actBtn.dataset.act;
 
     if (act === "close") return close();
-    if (act === "center-win") {
-      centerPanel();
-      return;
-    }
+    if (act === "center-win") return centerPanel();
     if (act === "toggle-theme") {
       theme = theme === "dark" ? "light" : "dark";
       root.dataset.theme = theme;
@@ -927,8 +1099,10 @@ export function mountUi(host, engine) {
       return;
     }
 
-    if (act === "toggle-npc") {
-      await engine.toggleNpcTracked(actBtn.dataset.npc);
+    if (act === "toggle-npc") return await engine.toggleNpcTracked(actBtn.dataset.npc);
+    if (act === "revive-npc") {
+      await engine.reviveNpc(actBtn.dataset.npc);
+      host.toast.success(`已复活「${actBtn.dataset.npc}」`);
       return;
     }
     if (act === "del-npc") {
@@ -937,6 +1111,33 @@ export function mountUi(host, engine) {
       if (selectedNpc === target) selectedNpc = null;
       host.toast.info(`已删除「${target}」`);
       render();
+      return;
+    }
+
+    if (act === "add-trend") {
+      const content = panel.querySelector("#nl4-tr-content")?.value?.trim();
+      if (!content) return host.toast.warn("请填写世界近况内容");
+      upsertWorldTrend(engine.getChatState(), {
+        location: panel.querySelector("#nl4-tr-loc")?.value?.trim() || "全域",
+        scope: panel.querySelector("#nl4-tr-scope")?.value || "公开",
+        content
+      });
+      await engine.persistState(null, false);
+      host.toast.success("已添加世界近况");
+      return;
+    }
+    if (act === "settle-trend") {
+      const t = (engine.getChatState().world.trends || []).find((x) => x.id === actBtn.dataset.id);
+      if (t) {
+        t.status = "settled";
+        await engine.persistState(null, false);
+      }
+      return;
+    }
+    if (act === "del-trend") {
+      const w = engine.getChatState().world;
+      w.trends = (w.trends || []).filter((x) => x.id !== actBtn.dataset.id);
+      await engine.persistState(null, false);
       return;
     }
 
@@ -1018,9 +1219,8 @@ export function mountUi(host, engine) {
     if (act === "copy-sys-prompt") {
       const text = getEffectiveSystemPrompt(engine.getSettings());
       try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(text);
-        } else {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+        else {
           const ta = document.createElement("textarea");
           ta.value = text;
           document.body.appendChild(ta);
@@ -1098,7 +1298,6 @@ export function mountUi(host, engine) {
     }
   });
 
-  // Delegated change handler
   panel.addEventListener("change", async (e) => {
     const el = e.target;
     if (el.dataset.setting) {
@@ -1199,6 +1398,7 @@ export function mountUi(host, engine) {
     render,
     destroy() {
       unsub();
+      window.removeEventListener("resize", onViewportResize);
       root.remove();
       document.getElementById("nl4-ext-menu-item")?.remove();
       document.getElementById("nl4-st-drawer-box")?.remove();

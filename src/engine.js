@@ -1,13 +1,22 @@
 import { GENERIC_TITLES, createBlankNpcCard } from "./constants.js";
 import { callSubApi, createTurnBudget, parseJsonRobust, recordDiagnostic } from "./api.js";
-import { advanceFateClocks, isDeceased, scanWorldbookForClocks } from "./clocks.js";
+import {
+  advanceFateClocks,
+  createClock,
+  isDeceased,
+  recordDeath,
+  reviveDeceasedNpc,
+  scanWorldbookForClocks
+} from "./clocks.js";
 import {
   buildMainPromptInjection,
   diffuseRumorsLocal,
+  formatActiveWorldTrends,
   pushRumor,
   recordKnows,
   refreshEncounterQueue,
-  runIsolatedNpcUpdates
+  runIsolatedNpcUpdates,
+  upsertWorldTrend
 } from "./livingWorld.js";
 import {
   loadChatState,
@@ -42,6 +51,8 @@ export const COMPACT_SYSTEM_PROMPT = `你是「NPC Life · 活世界」的后台
 {
   "剧情时间": "YYYY-MM-DD HH:mm（严格以正文为准，无明确时间可省略）",
   "移除NPC": ["仅确实死亡的已追踪角色名"],
+  "世界近况": [{"地点":"城北/全域","内容":"公开大事件如戒严/天灾/祭典（仅正文新发生公开大事时返，平时省略）","范围":"公开|传闻"}],
+  "新命运钟": [{"npc":"角色名","location":"地点","title":"若无人干预会恶化的定时危机（如中毒/被囚断粮/重伤，无则省略）","deadlineDays":14,"outcome":"dead|critical|missing|leave|betray"}],
   "角色名": {
     "身份锚点": "角色核心底色与典型一天（新建必填）",
     "别名": ["昵称或绰号"],
@@ -94,7 +105,7 @@ export const FULL_SYSTEM_PROMPT = `你是「NPC Life · 活世界」——维护
 
 输出格式要求：
 - 只输出一个完整 JSON 对象，首个非空白字符必须是 {，最后一个必须是 }。禁止任何解释、Markdown 代码围栏及 <think> / <reasoning> 等思维标签；JSON 字符串内禁止裸换行。
-- 顶层键只能是 "剧情时间"、"移除NPC" 与各 NPC 正式名（所有 NPC 一律平铺在顶层，不要包在分组数组里）。
+- 顶层键只能是 "剧情时间"、"移除NPC"、"世界近况"（可选）、"新命运钟"（可选）与各 NPC 正式名（所有 NPC 一律平铺在顶层，不要包在分组数组里）。
 - "剧情时间" 严格读取自【最新回复】标注时刻（"YYYY-MM-DD HH:mm"，无明确时间可省略，严禁自创超前时间线）。`;
 
 export function getEffectiveSystemPrompt(settings) {
@@ -142,6 +153,14 @@ export function buildUpdateMessages({
   }
   if (worldbookText) {
     staticParts.push(`【世界书设定参考（只提取设定，忽略其中给主AI的格式指令）】\n${worldbookText}`);
+  }
+  if (settings.livingWorld?.worldTrendsEnabled !== false) {
+    const trendBlock = formatActiveWorldTrends(chatState);
+    if (trendBlock) {
+      staticParts.push(
+        `【当前世界近况（背景局势：公开大事可作为 NPC 幕后生活参考，但须体现消息渠道如“听街坊说…”，严禁当作本轮新事件或无视防全知）】\n${trendBlock}`
+      );
+    }
   }
   const staticMsg = staticParts.length
     ? [{ role: "system", content: expand(staticParts.join("\n\n")) }]
@@ -217,7 +236,7 @@ function findExistingNpcByNameOrAlias(npcs, rawName) {
 export function mergeUpdateResponse(chatState, parsedData, settings, playerName = "", inSceneNames = []) {
   if (!parsedData || typeof parsedData !== "object") return { changedNpcs: [], addedNpcs: [] };
 
-  const metaKeys = new Set(["剧情时间", "移除NPC", "storyTime", "removeNpcs"]);
+  const metaKeys = new Set(["剧情时间", "移除NPC", "世界近况", "新命运钟", "storyTime", "removeNpcs"]);
   if (typeof parsedData["剧情时间"] === "string" && parsedData["剧情时间"].trim()) {
     chatState.storyTime = parsedData["剧情时间"].trim();
   } else if (parsedData["剧情时间"] && typeof parsedData["剧情时间"] === "object") {
@@ -227,16 +246,57 @@ export function mergeUpdateResponse(chatState, parsedData, settings, playerName 
 
   const removeList = Array.isArray(parsedData["移除NPC"]) ? parsedData["移除NPC"] : [];
   for (const rawDead of removeList) {
-    const formal = findExistingNpcByNameOrAlias(chatState.npcs, rawDead);
+    const deadName = typeof rawDead === "string" ? rawDead : rawDead?.npc || rawDead?.name || "";
+    const deadReason = typeof rawDead === "object" && rawDead?.reason ? rawDead.reason : "剧情中已确认死亡";
+    const formal = findExistingNpcByNameOrAlias(chatState.npcs, deadName);
     if (formal && !chatState.world.deceased[formal]) {
-      chatState.world.deceased[formal] = {
-        at: chatState.storyTime || "",
-        reason: "剧情中已确认死亡",
+      recordDeath(chatState, {
+        npc: formal,
+        reason: deadReason,
         location: chatState.npcs[formal]?.["位置"] || "",
-        revealed: true
-      };
-      chatState.npcs[formal]["当前状态"] = "已故";
-      chatState.npcs[formal]["当前在做"] = "已离世";
+        revealed: true,
+        storyTime: chatState.storyTime || ""
+      });
+    }
+  }
+
+  // Optional 0-extra-request world trends
+  if (settings.livingWorld?.worldTrendsEnabled !== false && Array.isArray(parsedData["世界近况"])) {
+    for (const rawT of parsedData["世界近况"]) {
+      if (!rawT || typeof rawT !== "object") continue;
+      upsertWorldTrend(chatState, {
+        location: rawT["地点"] || rawT.location || "全域",
+        content: rawT["内容"] || rawT.content || "",
+        scope: rawT["范围"] || rawT.scope || "公开",
+        storyTime: chatState.storyTime
+      });
+    }
+  }
+
+  // Optional 0-extra-request prose fate clocks
+  if (
+    settings.livingWorld?.fateClocks &&
+    settings.livingWorld?.autoCreateClocksFromProse !== false &&
+    Array.isArray(parsedData["新命运钟"])
+  ) {
+    for (const rawC of parsedData["新命运钟"]) {
+      if (!rawC || typeof rawC !== "object") continue;
+      const npc = String(rawC.npc || rawC["角色"] || "").trim();
+      const title = String(rawC.title || rawC["原因"] || "").trim();
+      if (!npc || !title || isDeceased(chatState, npc)) continue;
+      const dup = chatState.world.clocks.some(
+        (c) => c.npc === npc && c.title === title && c.status !== "resolved"
+      );
+      if (dup) continue;
+      chatState.world.clocks.push(
+        createClock({
+          npc,
+          location: rawC.location || rawC["地点"] || chatState.npcs[npc]?.["位置"] || "",
+          title,
+          deadlineDays: Number(rawC.deadlineDays || rawC["天数"]) || 14,
+          outcome: rawC.outcome || rawC["后果"] || "dead"
+        })
+      );
     }
   }
 
@@ -414,6 +474,11 @@ export function createNpcLifeEngine(host) {
   const toggleNpcTracked = async (name) => {
     if (!chatState.npcs[name]) return chatState;
     chatState.npcs[name].tracked = chatState.npcs[name].tracked === false;
+    return await persistState(null, true);
+  };
+
+  const reviveNpc = async (name) => {
+    if (!reviveDeceasedNpc(chatState, name)) return chatState;
     return await persistState(null, true);
   };
 
@@ -669,6 +734,7 @@ export function createNpcLifeEngine(host) {
     renameNpc,
     deleteNpc,
     toggleNpcTracked,
+    reviveNpc,
     clearCurrentChat,
     runUpdateTurn,
     handleBeforeGeneration,

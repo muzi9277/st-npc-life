@@ -8,16 +8,19 @@
   --nl4-shell: #1d1b18;
   --nl4-surface: #25221e;
   --nl4-surface-2: #2c2823;
-  --nl4-line: rgba(235, 224, 205, 0.12);
+  --nl4-line: rgba(235, 224, 205, 0.11);
   --nl4-line-strong: rgba(235, 224, 205, 0.22);
   --nl4-ink: #eee8dc;
   --nl4-muted: #9e9587;
   --nl4-accent: #e5a857;
-  --nl4-accent-soft: rgba(229, 168, 87, 0.16);
+  --nl4-accent-soft: rgba(229, 168, 87, 0.15);
   --nl4-accent-text: #f6c781;
   --nl4-success: #5bbf82;
   --nl4-danger: #d96b6b;
+  --nl4-danger-soft: rgba(217, 107, 107, 0.13);
   --nl4-input-bg: #151311;
+  --nl4-switch-off: rgba(235, 224, 205, 0.18);
+  --nl4-switch-thumb: #faf6ee;
   --nl4-shadow: 0 22px 64px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(235, 224, 205, 0.1);
   --nl4-tab1: #2a2723;
   --nl4-tab2: #242b29;
@@ -45,11 +48,14 @@
   --nl4-ink: #2c261f;
   --nl4-muted: #766a59;
   --nl4-accent: #b87928;
-  --nl4-accent-soft: rgba(184, 121, 40, 0.14);
+  --nl4-accent-soft: rgba(184, 121, 40, 0.13);
   --nl4-accent-text: #8c5514;
   --nl4-success: #2f855a;
   --nl4-danger: #c53030;
+  --nl4-danger-soft: rgba(197, 48, 48, 0.1);
   --nl4-input-bg: #fbf8f2;
+  --nl4-switch-off: rgba(88, 69, 44, 0.24);
+  --nl4-switch-thumb: #ffffff;
   --nl4-shadow: 0 18px 50px rgba(45, 36, 24, 0.24), 0 0 0 1px rgba(88, 69, 44, 0.18);
   --nl4-tab1: #e8dfd0;
   --nl4-tab2: #dde6e0;
@@ -67,7 +73,7 @@
   box-sizing: border-box;
 }
 
-/* ===== Draggable Floating Globe Orb ===== */
+/* ===== GPU-Smooth Draggable Floating Globe Orb ===== */
 .nl4-orb {
   position: fixed;
   z-index: 10040;
@@ -83,7 +89,12 @@
   cursor: grab;
   touch-action: none;
   user-select: none;
-  transition: transform 0.16s ease, box-shadow 0.16s ease;
+  will-change: transform;
+  transition:
+    left 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    top 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.15s ease,
+    box-shadow 0.15s ease;
 }
 
 .nl4-orb:hover {
@@ -92,8 +103,9 @@
 }
 
 .nl4-orb.dragging {
+  transition: none !important;
   cursor: grabbing;
-  transform: scale(0.95);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.6), 0 0 22px rgba(229, 168, 87, 0.55);
 }
 
 .nl4-orb.busy .nl4-globe-svg {
@@ -110,6 +122,7 @@
   width: 28px;
   height: 28px;
   display: block;
+  pointer-events: none;
   filter: drop-shadow(0 0 6px rgba(125, 211, 252, 0.35));
 }
 
@@ -120,6 +133,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  pointer-events: none;
   background: var(--nl4-success);
   box-shadow: 0 0 6px var(--nl4-success);
 }
@@ -129,7 +143,7 @@
   box-shadow: 0 0 6px var(--nl4-accent);
 }
 
-/* ===== Bifa-style Draggable Book-Ledger Floating Panel ===== */
+/* ===== Bifa-style GPU-Draggable Book-Ledger Floating Panel ===== */
 .nl4-panel {
   position: fixed;
   z-index: 10050;
@@ -149,15 +163,21 @@
   overflow: visible;
   background: transparent;
   color: var(--nl4-ink);
+  will-change: transform;
   animation: nl4PanelIn 0.16s ease-out;
+  transition: opacity 0.12s ease;
+}
+
+.nl4-panel.dragging {
+  transition: none !important;
+  opacity: 0.95;
 }
 
 @keyframes nl4PanelIn {
-  from { opacity: 0; transform: scale(0.98); }
+  from { opacity: 0; transform: scale(0.985); }
   to { opacity: 1; transform: scale(1); }
 }
 
-/* Main book shell behind bar/view/status */
 .nl4-panel::before {
   content: "";
   grid-area: 1 / 1 / 4 / 2;
@@ -175,7 +195,6 @@
   z-index: 3;
 }
 
-/* Draggable Title Bar */
 .nl4-topbar {
   grid-area: bar;
   display: flex;
@@ -238,7 +257,7 @@
   flex-wrap: wrap;
 }
 
-/* Right-side protruding vertical book-tabs (Signature Bifa Aesthetic!) */
+/* Right-side protruding vertical book-tabs */
 .nl4-nav {
   grid-area: tabs;
   position: relative;
@@ -325,7 +344,6 @@
   box-shadow: 0 0 8px var(--nl4-accent);
 }
 
-/* Main Scrollable Canvas */
 .nl4-main {
   grid-area: view;
   min-height: 0;
@@ -333,7 +351,6 @@
   padding: 14px 18px 18px;
 }
 
-/* Bottom Status Rail */
 .nl4-foot {
   grid-area: status;
   display: flex;
@@ -370,27 +387,146 @@
   background: var(--nl4-accent);
 }
 
-/* Resize Handle (bottom-right of main shell) */
+/* Generous 24x24px Resize Handle Hit Area */
 .nl4-resize {
   position: absolute;
-  right: 46px;
-  bottom: 2px;
+  right: 44px;
+  bottom: 0;
   z-index: 6;
-  width: 16px;
-  height: 16px;
+  width: 24px;
+  height: 24px;
   cursor: nwse-resize;
-  opacity: 0.45;
-  background: linear-gradient(135deg, transparent 50%, var(--nl4-muted) 50%, var(--nl4-muted) 62%, transparent 62%, transparent 75%, var(--nl4-muted) 75%);
+  touch-action: none;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 5px;
 }
 
-.nl4-resize:hover {
-  opacity: 0.9;
+.nl4-resize::after {
+  content: "";
+  width: 11px;
+  height: 11px;
+  opacity: 0.48;
+  transition: opacity 0.14s ease;
+  background: linear-gradient(
+    135deg,
+    transparent 45%,
+    var(--nl4-muted) 45%,
+    var(--nl4-muted) 58%,
+    transparent 58%,
+    transparent 74%,
+    var(--nl4-muted) 74%
+  );
 }
 
-/* ===== Bifa-style Master/Detail Character Layout & Editorial Cards ===== */
+.nl4-resize:hover::after {
+  opacity: 0.95;
+}
+
+/* ===== One-Per-Row Setting Rows + Sliding Toggle Switch ===== */
+.nl4-setting-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.nl4-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--nl4-line);
+}
+
+.nl4-setting-row:first-child {
+  padding-top: 4px;
+}
+
+.nl4-setting-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 2px;
+}
+
+.nl4-setting-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.nl4-setting-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--nl4-ink);
+  line-height: 1.35;
+}
+
+.nl4-setting-desc {
+  font-size: 11.5px;
+  color: var(--nl4-muted);
+  margin-top: 2px;
+  line-height: 1.45;
+}
+
+.nl4-setting-ctrl {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+
+.nl4-switch {
+  position: relative;
+  display: inline-block;
+  width: 42px;
+  height: 24px;
+  flex: none;
+  cursor: pointer;
+}
+
+.nl4-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.nl4-slider {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--nl4-switch-off);
+  transition: background-color 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.nl4-slider::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--nl4-switch-thumb);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.nl4-switch input:checked + .nl4-slider {
+  background: var(--nl4-accent);
+}
+
+.nl4-switch input:checked + .nl4-slider::before {
+  transform: translateX(18px);
+}
+
+.nl4-switch input:focus-visible + .nl4-slider {
+  outline: 2px solid var(--nl4-accent);
+  outline-offset: 2px;
+}
+
+/* ===== Bifa-style Master/Detail Character Layout & Death Archive ===== */
 .nl4-npc-split {
   display: grid;
-  grid-template-columns: 230px minmax(0, 1fr);
+  grid-template-columns: 235px minmax(0, 1fr);
   gap: 14px;
   min-height: 440px;
 }
@@ -401,6 +537,20 @@
   gap: 6px;
   border-right: 1px solid var(--nl4-line);
   padding-right: 12px;
+}
+
+.nl4-roster-group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--nl4-line-strong);
+}
+
+.nl4-roster-group > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--nl4-muted);
+  margin-bottom: 6px;
+  font-weight: 600;
 }
 
 .nl4-roster-item {
@@ -428,8 +578,8 @@
 }
 
 .nl4-roster-item.dead {
-  opacity: 0.7;
-  border-color: rgba(217, 107, 107, 0.35);
+  opacity: 0.78;
+  border-color: rgba(217, 107, 107, 0.32);
 }
 
 .nl4-roster-top {
@@ -458,6 +608,21 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.nl4-death-banner {
+  padding: 11px 13px;
+  border-radius: 9px;
+  background: var(--nl4-danger-soft);
+  border: 1px solid rgba(217, 107, 107, 0.35);
+  margin: 10px 0;
+}
+
+.nl4-trace-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: var(--nl4-ink);
 }
 
 .nl4-section {
@@ -503,7 +668,7 @@
 .nl4-h3 {
   margin: 0;
   font-family: var(--nl4-serif);
-  font-size: 16px;
+  font-size: 15.5px;
   font-weight: 600;
 }
 
@@ -517,7 +682,7 @@
 .nl4-dl {
   margin: 0;
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
+  grid-template-columns: 92px minmax(0, 1fr);
   gap: 6px 10px;
   font-size: 13px;
 }
@@ -533,11 +698,10 @@
   word-break: break-word;
 }
 
-/* Controls */
 .nl4-bar {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
@@ -579,24 +743,13 @@
 }
 
 .nl4-num {
-  width: 68px;
+  width: 84px;
+  text-align: center;
 }
 
-.nl4-inline-num {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
-}
-
-.nl4-check {
-  display: inline-flex !important;
-  flex-direction: row !important;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  font-size: 12.5px;
-  color: var(--nl4-ink) !important;
+.nl4-select-sm {
+  width: 210px;
+  max-width: 100%;
 }
 
 .nl4-btn {
@@ -771,7 +924,7 @@
     border-bottom: 1px solid var(--nl4-line);
     padding-right: 0;
     padding-bottom: 10px;
-    max-height: 170px;
+    max-height: 180px;
     overflow-y: auto;
   }
   .nl4-span-2 {
@@ -779,5 +932,8 @@
   }
   .nl4-resize {
     display: none;
+  }
+  .nl4-select-sm {
+    width: 165px;
   }
 }

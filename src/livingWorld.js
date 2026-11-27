@@ -1,4 +1,4 @@
-import { MAX_QUEUE, MAX_RUMORS, MAX_TERMINAL_LEDGER } from "./constants.js";
+import { MAX_QUEUE, MAX_RUMORS, MAX_TERMINAL_LEDGER, MAX_WORLD_TRENDS } from "./constants.js";
 import { callSubApi, parseJsonRobust } from "./api.js";
 import { buildClockMainDirectives, isDeceased } from "./clocks.js";
 import { detectInSceneNpcs } from "./text.js";
@@ -125,6 +125,45 @@ export function refreshEncounterQueue(chatState, inSceneNames = []) {
 
   chatState.world.queue = queue.slice(-MAX_QUEUE);
   return chatState.world.queue;
+}
+
+/**
+ * Lightweight 0-extra-request World Trends (public events / lockdowns / weather / festivals).
+ */
+export function upsertWorldTrend(chatState, { location = "", content = "", scope = "公开", storyTime = "" }) {
+  const cleanContent = String(content || "").trim();
+  if (!cleanContent || cleanContent.length < 4) return null;
+  if (!Array.isArray(chatState.world.trends)) chatState.world.trends = [];
+  const loc = String(location || "全域").trim();
+  const dup = chatState.world.trends.find(
+    (t) => t.status === "active" && t.content === cleanContent && t.location === loc
+  );
+  if (dup) return dup;
+
+  const trend = {
+    id: `tr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`,
+    location: loc,
+    content: cleanContent,
+    scope: scope === "传闻" ? "传闻" : "公开",
+    status: "active",
+    storyTime: String(storyTime || chatState.storyTime || ""),
+    createdAt: Date.now()
+  };
+  chatState.world.trends.unshift(trend);
+
+  // Keep at most MAX_WORLD_TRENDS active trends + 5 settled history
+  const active = chatState.world.trends.filter((t) => t.status === "active").slice(0, MAX_WORLD_TRENDS);
+  const settled = chatState.world.trends.filter((t) => t.status !== "active").slice(0, 5);
+  chatState.world.trends = [...active, ...settled];
+  return trend;
+}
+
+export function formatActiveWorldTrends(chatState) {
+  const active = (chatState?.world?.trends || []).filter((t) => t && t.status === "active");
+  if (!active.length) return "";
+  return active
+    .map((t) => `- [${t.scope || "公开"}·${t.location || "全域"}] ${t.content}${t.storyTime ? `（${t.storyTime}）` : ""}`)
+    .join("\n");
 }
 
 /**

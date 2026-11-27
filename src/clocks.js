@@ -12,6 +12,88 @@ export function isDeceased(chatState, npcName) {
   return Boolean(chatState?.world?.deceased?.[npcName]);
 }
 
+/**
+ * Collect legacy items & unfinished promises from a dying NPC into tangible scene traces.
+ */
+function extractDeathTraces(card) {
+  if (!card || typeof card !== "object") return [];
+  const traces = [];
+  const items = Array.isArray(card["未完成事项"]) ? card["未完成事项"] : [];
+  for (const item of items) {
+    if (item && item["状态"] === "进行中" && item["内容"]) {
+      traces.push(`未竟遗愿/约定：${item["内容"]}`);
+    }
+  }
+  const belongings = String(card["衣物/随身物"] || "").trim();
+  if (belongings) {
+    traces.push(`随身遗物：${belongings}`);
+  }
+  const plan = String(card["藏起来的打算"] || "").trim();
+  if (plan) {
+    traces.push(`生前未说出口的盘算（仅线索可察）：${plan}`);
+  }
+  return traces.slice(0, 6);
+}
+
+/**
+ * Unified death archival for BOTH fate-clock expiration AND prose-triggered deaths.
+ * Converts unfinished promises/belongings into scene traces and seeds an info-gap rumor if unwitnessed.
+ */
+export function recordDeath(chatState, { npc, reason = "", location = "", clockId = "", revealed = false, storyTime = "" }) {
+  const name = String(npc || "").trim();
+  if (!name) return null;
+  const world = chatState.world;
+  const card = chatState.npcs?.[name];
+  const loc = String(location || card?.["位置"] || "").trim();
+  const traces = extractDeathTraces(card);
+
+  const info = {
+    at: String(storyTime || chatState.storyTime || "未知时间"),
+    reason: String(reason || "意外离世").trim(),
+    clockId: String(clockId || ""),
+    location: loc,
+    revealed: Boolean(revealed),
+    revealedAt: revealed ? String(storyTime || chatState.storyTime || "") : "",
+    traces
+  };
+  world.deceased[name] = info;
+
+  if (card) {
+    card["当前状态"] = `已故（${info.reason}）`;
+    card["当前在做"] = "已离世";
+    if (Array.isArray(card["未完成事项"])) {
+      for (const item of card["未完成事项"]) {
+        if (item && item["状态"] === "进行中") {
+          item["状态"] = "已作废";
+          item["结果"] = `当事人已故（转为现场遗留痕迹）`;
+        }
+      }
+    }
+  }
+
+  // Remove dead NPC from active approach queue
+  world.queue = (world.queue || []).filter((q) => q && q.npc !== name);
+
+  // If unwitnessed off-stage death, seed a subtle info-gap rumor instead of instant omniscience
+  if (!revealed) {
+    const clue = loc
+      ? `有人留意到「${loc}」一带多日不见${name}露面，隐约觉得出了变故`
+      : `附近街坊隐约议论，说已好些日子没见到${name}的踪影`;
+    if (!world.rumors.some((r) => r.originNpc === name && r.content === clue)) {
+      world.rumors.push({
+        id: `rm_dead_${Date.now().toString(36)}`,
+        originNpc: name,
+        location: loc,
+        content: clue,
+        hops: 0,
+        heardBy: [name],
+        createdAt: Date.now()
+      });
+    }
+  }
+  return info;
+}
+
 export function preScreenClockCandidate(text) {
   const s = String(text || "");
   if (s.length < 15) return false;
@@ -144,17 +226,14 @@ export function advanceFateClocks(chatState, latestText, settings) {
         newlyTriggered.push(clk);
 
         if (clk.outcome === "dead") {
-          world.deceased[clk.npc] = {
-            at: nextDate || chatState.storyTime || "未知时间",
+          recordDeath(chatState, {
+            npc: clk.npc,
             reason: clk.title,
-            clockId: clk.id,
             location: clk.location || card?.["位置"] || "",
-            revealed: false
-          };
-          if (card) {
-            card["当前状态"] = `已故（${clk.title}）`;
-            card["当前在做"] = "已离世";
-          }
+            clockId: clk.id,
+            revealed: false,
+            storyTime: nextDate || chatState.storyTime || ""
+          });
         } else if (card) {
           card["当前状态"] = `${meta.label}（${clk.title}）`;
         }
@@ -175,6 +254,37 @@ export function advanceFateClocks(chatState, latestText, settings) {
   return { elapsedDays, newlyTriggered, newlyRevealed, resetClocks };
 }
 
+export function reviveDeceasedNpc(chatState, npcName) {
+  const name = String(npcName || "").trim();
+  if (!name) return false;
+  const world = chatState.world;
+  const info = world.deceased?.[name];
+  if (info?.clockId) {
+    const clk = (world.clocks || []).find((c) => c.id === info.clockId);
+    if (clk) {
+      clk.status = "active";
+      clk.elapsedDays = 0;
+      clk.revealed = false;
+      clk.triggerDetail = "";
+    }
+  }
+  delete world.deceased[name];
+  const card = chatState.npcs?.[name];
+  if (card) {
+    if (String(card["当前状态"] || "").startsWith("已故")) card["当前状态"] = "恢复正常";
+    if (card["当前在做"] === "已离世") card["当前在做"] = "休养中";
+    if (Array.isArray(card["未完成事项"])) {
+      for (const item of card["未完成事项"]) {
+        if (item && item["结果"] === "当事人已故（转为现场遗留痕迹）") {
+          item["状态"] = "进行中";
+          item["结果"] = "";
+        }
+      }
+    }
+  }
+  return true;
+}
+
 export function reviveOrUndoClock(chatState, clockId) {
   const world = chatState.world;
   const clk = world.clocks.find((c) => c.id === clockId);
@@ -183,19 +293,14 @@ export function reviveOrUndoClock(chatState, clockId) {
   clk.elapsedDays = 0;
   clk.revealed = false;
   clk.triggerDetail = "";
-  if (world.deceased[clk.npc]?.clockId === clockId || world.deceased[clk.npc]) {
-    delete world.deceased[clk.npc];
-  }
-  const card = chatState.npcs?.[clk.npc];
-  if (card && String(card["当前状态"] || "").startsWith("已故")) {
-    card["当前状态"] = "恢复正常";
-    card["当前在做"] = "休养中";
+  if (world.deceased[clk.npc]) {
+    reviveDeceasedNpc(chatState, clk.npc);
   }
   return true;
 }
 
 /**
- * Build anti-resurrection + delayed reveal directives for the main model.
+ * Build anti-resurrection + delayed reveal + scene遗留痕迹 directives for the main model.
  */
 export function buildClockMainDirectives(chatState) {
   const world = chatState.world;
@@ -205,11 +310,17 @@ export function buildClockMainDirectives(chatState) {
   if (deadEntries.length) {
     lines.push("【已故人物铁律（严禁诈尸）】");
     for (const [name, info] of deadEntries) {
+      const traceText =
+        Array.isArray(info.traces) && info.traces.length
+          ? ` 现场遗留痕迹：${info.traces.join("；")}。`
+          : "";
       if (info.revealed) {
-        lines.push(`- ${name} 已死亡（原因：${info.reason || "危机到期"}），严禁让其作为活人出场、对话或发消息。`);
+        lines.push(
+          `- ${name} 已死亡（原因：${info.reason || "危机到期"}），严禁让其作为活人出场、对话或发消息。${traceText}`
+        );
       } else {
         lines.push(
-          `- ${name} 在幕后已于「${info.location || "原处"}」因「${info.reason || "长期无人干预"}」死亡，但主角**尚未得知**。严禁让其作为活人出现；只有当主角亲临现场、派人打听或触发相关线索时，再自然揭露死讯或遗留痕迹。`
+          `- ${name} 在幕后已于「${info.location || "原处"}」因「${info.reason || "长期无人干预"}」死亡，但主角**尚未得知**。严禁让其作为活人出现；只有当主角亲临现场、派人打听或触发相关线索时，再自然揭露死讯。${traceText}`
         );
       }
     }

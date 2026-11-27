@@ -170,6 +170,7 @@ export function normalizeChatState(raw) {
       },
       rumors: Array.isArray(w.rumors) ? w.rumors : [],
       queue: Array.isArray(w.queue) ? w.queue : [],
+      trends: Array.isArray(w.trends) ? w.trends : [],
       clocks: Array.isArray(w.clocks) ? w.clocks : [],
       deceased: w.deceased && typeof w.deceased === "object" ? w.deceased : {},
       clockScanHashes: Array.isArray(w.clockScanHashes) ? w.clockScanHashes : [],

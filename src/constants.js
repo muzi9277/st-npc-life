@@ -1,4 +1,4 @@
-export const VERSION = "4.0.0-beta.1";
+export const VERSION = "4.0.0-beta.2";
 export const PLUGIN_NAME = "NPC Life · 活世界";
 
 // Brand-new independent storage keys (zero collision with legacy Bifa)
@@ -17,6 +17,7 @@ export const MAX_DIAGNOSTIC_LOGS = 5;
 export const MAX_TERMINAL_LEDGER = 25;
 export const MAX_RUMORS = 20;
 export const MAX_QUEUE = 12;
+export const MAX_WORLD_TRENDS = 5;
 
 export const WB_FIELD_DEFS = [
   { key: "身份锚点", label: "身份锚点", group: "core" },
@@ -96,9 +97,11 @@ export function createDefaultSettings() {
     // Living world & fate clocks
     livingWorld: {
       enabled: true,
+      worldTrendsEnabled: true,
       isolatedNpcCalls: false,
       isolatedMaxNpcs: 3,
       fateClocks: true,
+      autoCreateClocksFromProse: true,
       godView: false,
       autoScanWorldbook: false,
       llmRumorRewrite: false
@@ -129,8 +132,9 @@ export function createEmptyChatState() {
       ledger: { knows: [], events: [] },
       rumors: [],
       queue: [],
+      trends: [], // [{ id, location, content, scope, status, storyTime, createdAt }]
       clocks: [],
-      deceased: {}, // { [name]: { at, reason, clockId, revealed, revealedAt, location } }
+      deceased: {}, // { [name]: { at, reason, clockId, revealed, revealedAt, location, traces } }
       clockScanHashes: [],
       lastStoryDate: ""
     }
