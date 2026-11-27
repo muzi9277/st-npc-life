@@ -52,7 +52,13 @@ export function textMentionsNpc(text, formalName, aliases = []) {
   const hay = String(text || "");
   if (!hay) return false;
   const formal = String(formalName || "").trim();
-  if (formal && formal.length >= 2 && hay.includes(formal)) return true;
+  if (formal) {
+    if (formal.length >= 2 && hay.includes(formal)) return true;
+    if (formal.length === 1) {
+      if (/[\u4e00-\u9fff]/.test(formal) && hay.includes(formal)) return true;
+      if (/^[A-Za-z0-9]$/.test(formal) && new RegExp(`\\b${formal}\\b`).test(hay)) return true;
+    }
+  }
   const norm = normalizeAliases(aliases, formal);
   for (const al of norm) {
     if (hay.includes(al)) return true;
@@ -190,18 +196,17 @@ export function attachPersonaRefSmart(card, npcName, rawRef, opts = {}) {
 }
 
 /**
- * Extract date string YYYY-MM-DD (or MM-DD) from story prose / status bar.
+ * Extract the LATEST date string YYYY-MM-DD from story prose / status bar (handles date ranges crossing midnight).
  */
 export function extractStoryDate(text) {
   const s = String(text || "");
-  const iso = s.match(/(\d{3,4})[-年/.](\d{1,2})[-月/.](\d{1,2})/);
-  if (iso) {
-    const y = iso[1].padStart(4, "0");
-    const m = iso[2].padStart(2, "0");
-    const d = iso[3].padStart(2, "0");
-    return `${y}-${m}-${d}`;
-  }
-  return "";
+  const matches = [...s.matchAll(/(\d{3,4})[-年/.](\d{1,2})[-月/.](\d{1,2})/g)];
+  if (!matches.length) return "";
+  const last = matches[matches.length - 1];
+  const y = last[1].padStart(4, "0");
+  const m = last[2].padStart(2, "0");
+  const d = last[3].padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 function parseChineseNum(raw) {

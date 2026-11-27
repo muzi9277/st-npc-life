@@ -96,14 +96,19 @@ export function loadSettings(host) {
       settings.api.maxTokens = Number(api["最大令牌"]);
     }
 
-    if (Array.isArray(bf["自定义段"])) {
-      settings.customSegments = bf["自定义段"]
+    const legacySegs = Array.isArray(bf["提示词"]?.["自定义段"])
+      ? bf["提示词"]["自定义段"]
+      : Array.isArray(bf["自定义段"])
+        ? bf["自定义段"]
+        : [];
+    if (legacySegs.length) {
+      settings.customSegments = legacySegs
         .filter((s) => s && typeof s === "object" && (s["内容"] || s.content))
         .map((s, idx) => ({
           id: String(s.id || `seg_${idx + 1}`),
           name: String(s["名称"] || s.name || `自定义段 ${idx + 1}`),
           role: String(s.role || s["角色"] || "system"),
-          position: String(s["位置"] || s.position || "最前"),
+          position: String(s["锚点"] || s["位置"] || s.position || "最前"),
           enabled: s["启用"] !== false && s.enabled !== false,
           content: String(s["内容"] || s.content || "")
         }));

@@ -1,7 +1,8 @@
-import { MAX_QUEUE, MAX_RUMORS, MAX_TERMINAL_LEDGER, MAX_WORLD_TRENDS } from "./constants.js";
+import { KEYS, MAX_QUEUE, MAX_RUMORS, MAX_TERMINAL_LEDGER, MAX_WORLD_TRENDS } from "./constants.js";
 import { callSubApi, parseJsonRobust } from "./api.js";
 import { buildClockMainDirectives, isDeceased } from "./clocks.js";
 import { detectInSceneNpcs } from "./text.js";
+import { formatWorldbookEntry } from "./worldbook.js";
 
 /**
  * Record a witnessed / heard fact in the info-gap ledger (knows).
@@ -253,34 +254,58 @@ export async function runIsolatedNpcUpdates(host, chatState, settings, latestRep
 
 /**
  * Compose the concise living-world prompt injection for the main model via ST setExtensionPrompt.
- * Respects info-gap (only shows on-scene knows + queued approaches + fate clock directives).
+ * Supports:
+ * - Native fallback NPC table when worldbook write is off / unavailable
+ * - Anti-resurrection + delayed reveal + scene traces
+ * - Public world trends (excludes rumors)
+ * - In-scene info-gap boundary + active approach queue
  */
-export function buildMainPromptInjection(chatState, settings, recentText = "") {
-  if (!settings.enabled || !settings.livingWorld?.enabled) return "";
+export function buildMainPromptInjection(chatState, settings, recentText = "", opts = {}) {
+  if (!settings.enabled) return "";
   const sections = [];
 
-  const clockBlock = buildClockMainDirectives(chatState);
-  if (clockBlock) sections.push(clockBlock);
-
-  const inScene = detectInSceneNpcs(recentText, chatState.npcs);
-  const onSceneKnows = (chatState.world.ledger.knows || []).filter(
-    (k) => inScene.includes(k.npc) && k.status !== "done" && !isDeceased(chatState, k.npc)
-  );
-  if (onSceneKnows.length) {
-    sections.push(
-      "【在场 NPC 的信息边界（仅以下为其真实已知，未提及的幕后情报严禁全知）】\n" +
-        onSceneKnows.slice(-8).map((k) => `- ${k.npc}（${k.source === "rumor" ? "听闻" : "亲见"}）：${k.fact}`).join("\n")
-    );
+  if (opts.includeNpcTable) {
+    const rawTable = formatWorldbookEntry(chatState, settings);
+    const cleanTable = rawTable.replace(KEYS.WORLDBOOK_MARKER, "").trim();
+    if (cleanTable) sections.push(cleanTable);
   }
 
-  const pendingQueue = (chatState.world.queue || []).filter(
-    (q) => q.status === "pending" && !isDeceased(chatState, q.npc)
-  );
-  if (pendingQueue.length) {
-    sections.push(
-      "【可能自然触发的主动偶遇 / 来访（若剧情节奏合适可自然安排，勿生硬打断）】\n" +
-        pendingQueue.slice(0, 3).map((q) => `- ${q.npc}：${q.action}`).join("\n")
+  if (settings.livingWorld?.enabled) {
+    const clockBlock = buildClockMainDirectives(chatState);
+    if (clockBlock) sections.push(clockBlock);
+
+    if (settings.livingWorld?.worldTrendsEnabled !== false) {
+      const publicTrends = (chatState.world.trends || [])
+        .filter((t) => t && t.status === "active" && t.scope !== "传闻")
+        .slice(0, 3);
+      if (publicTrends.length) {
+        sections.push(
+          "【当前世界公开局势（供主剧情保持环境一致，勿强行刷屏）】\n" +
+            publicTrends.map((t) => `- [${t.location || "全域"}] ${t.content}`).join("\n")
+        );
+      }
+    }
+
+    const inScene = detectInSceneNpcs(recentText, chatState.npcs);
+    const onSceneKnows = (chatState.world.ledger.knows || []).filter(
+      (k) => inScene.includes(k.npc) && k.status !== "done" && !isDeceased(chatState, k.npc)
     );
+    if (onSceneKnows.length) {
+      sections.push(
+        "【在场 NPC 的信息边界（仅以下为其真实已知，未提及的幕后情报严禁全知）】\n" +
+          onSceneKnows.slice(-8).map((k) => `- ${k.npc}（${k.source === "rumor" ? "听闻" : "亲见"}）：${k.fact}`).join("\n")
+      );
+    }
+
+    const pendingQueue = (chatState.world.queue || []).filter(
+      (q) => q.status === "pending" && !isDeceased(chatState, q.npc)
+    );
+    if (pendingQueue.length) {
+      sections.push(
+        "【可能自然触发的主动偶遇 / 来访（若剧情节奏合适可自然安排，勿生硬打断）】\n" +
+          pendingQueue.slice(0, 3).map((q) => `- ${q.npc}：${q.action}`).join("\n")
+      );
+    }
   }
 
   if (!sections.length) return "";

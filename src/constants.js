@@ -1,4 +1,4 @@
-export const VERSION = "4.0.0-beta.5";
+export const VERSION = "4.0.0-beta.6";
 export const PLUGIN_NAME = "NPC Life · 活世界";
 
 // Brand-new independent storage keys (zero collision with legacy Bifa)
@@ -36,7 +36,8 @@ export const WB_FIELD_DEFS = [
 ];
 
 export const WB_PRESETS = {
-  full: WB_FIELD_DEFS.map((f) => f.key),
+  // Default full excludes 藏起来的打算 so main AI won't spoil hidden NPC schemes (still opt-in via custom)
+  full: WB_FIELD_DEFS.filter((f) => f.key !== "藏起来的打算").map((f) => f.key),
   minimal: ["位置", "当前在做", "当前状态"]
 };
 
@@ -85,6 +86,8 @@ export function createDefaultSettings() {
     worldbook: {
       readEnabled: true,
       writeTarget: "chat", // "chat" | "primary" | "off"
+      nativeInjectFallback: true, // If worldbook write is off or TavernHelper unavailable, inject NPC table via ST native setExtensionPrompt
+      injectDepth: 3, // IN_CHAT depth for ST native setExtensionPrompt (0..10)
       excludeKeywords: [],
       injectMode: "full", // "full" | "minimal" | "custom"
       customFields: [...WB_PRESETS.full]

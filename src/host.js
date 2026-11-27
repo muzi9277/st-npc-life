@@ -414,16 +414,17 @@ export function createHostAdapter(overrides = {}) {
   };
 
   const prompt = {
-    async setInjection(content) {
+    async setInjection(content, depth = 3) {
       const st = getST();
       if (!st || typeof st.setExtensionPrompt !== "function") return false;
       const types = st.extension_prompt_types || { IN_CHAT: 1 };
       const roles = st.extension_prompt_roles || { SYSTEM: 0 };
+      const safeDepth = Number.isFinite(Number(depth)) ? Math.max(0, Math.min(10, Math.round(Number(depth)))) : 3;
       const res = st.setExtensionPrompt(
         KEYS.PROMPT_INJECT_ID,
         String(content || ""),
         types.IN_CHAT ?? 1,
-        3,
+        safeDepth,
         false,
         roles.SYSTEM ?? 0
       );

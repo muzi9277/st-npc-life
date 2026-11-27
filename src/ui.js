@@ -109,6 +109,7 @@ export function mountUi(host, engine) {
   let editingNpc = null;
   let busyText = "";
   let fetchedModels = [];
+  let rosterFilter = "";
   let theme = readJsonLS(THEME_KEY, "dark") === "light" ? "light" : "dark";
 
   let root = document.getElementById("nl4-root");
@@ -138,11 +139,13 @@ export function mountUi(host, engine) {
 
   const applyOrbPos = (pos, snapEdge = false) => {
     const vw = window.innerWidth || 1280;
-    const vh = window.innerHeight || 800;
+    const vh = window.visualViewport?.height || window.innerHeight || 800;
     const margin = 10;
     const orbW = 48;
+    const isMobile = vw <= 760;
+    const defaultTop = isMobile ? Math.round(vh * 0.38) : vh - 128;
     let left = clamp(pos?.left ?? vw - orbW - 14, margin, Math.max(margin, vw - orbW - margin));
-    const top = clamp(pos?.top ?? vh - 128, margin, Math.max(margin, vh - orbW - margin));
+    const top = clamp(pos?.top ?? defaultTop, margin, Math.max(margin, vh - orbW - margin));
     // Soft magnetic edge snap when released within 44px of left or right screen edge
     if (snapEdge) {
       if (left <= 44) left = margin;
@@ -185,7 +188,7 @@ export function mountUi(host, engine) {
   };
   applyWinRect(readJsonLS(POS_WIN_KEY));
 
-  // Keep orb & panel visible when viewport resizes or phone rotates
+  // Keep orb & panel visible when viewport resizes, keyboard opens, or phone rotates
   const onViewportResize = () => {
     const or = orb.getBoundingClientRect();
     if (or.width > 0) applyOrbPos({ left: or.left, top: or.top }, false);
@@ -195,6 +198,8 @@ export function mountUi(host, engine) {
     }
   };
   window.addEventListener("resize", onViewportResize);
+  window.addEventListener("orientationchange", onViewportResize);
+  window.visualViewport?.addEventListener("resize", onViewportResize);
 
   // --- Silky GPU-Accelerated Orb Drag (rAF + translate3d + Soft Magnetic Edge Snap) ---
   {
@@ -506,18 +511,36 @@ export function mountUi(host, engine) {
         </button>`;
     };
 
-    const rosterHtml =
-      (livingNames.length
-        ? livingNames.map((n) => renderRosterItem(n, false)).join("")
-        : `<div class="nl4-muted" style="padding:8px 4px">暂无在世角色</div>`) +
-      (deadNames.length
-        ? `<details class="nl4-roster-group" ${deadNames.includes(selectedNpc) ? "open" : ""}>
-            <summary>🕊️ 已故归档（${deadNames.length}）</summary>
-            <div style="display:flex;flex-direction:column;gap:6px">
-              ${deadNames.map((n) => renderRosterItem(n, true)).join("")}
-            </div>
-          </details>`
-        : "");
+    const buildRosterInnerHtml = (filterStr = "") => {
+      const q = String(filterStr || "").trim().toLowerCase();
+      const matchesFilter = (name) => {
+        if (!q) return true;
+        const c = chatState.npcs[name];
+        const blob = `${name} ${(c?.aliases || []).join(" ")} ${c?.["位置"] || ""} ${c?.["身份锚点"] || ""}`.toLowerCase();
+        return blob.includes(q);
+      };
+      const fLiving = livingNames.filter(matchesFilter);
+      const fDead = deadNames.filter(matchesFilter);
+      return (
+        (fLiving.length
+          ? fLiving.map((n) => renderRosterItem(n, false)).join("")
+          : `<div class="nl4-muted" style="padding:8px 4px">${q ? "无匹配角色" : "暂无在世角色"}</div>`) +
+        (fDead.length
+          ? `<details class="nl4-roster-group" ${fDead.includes(selectedNpc) || q ? "open" : ""}>
+              <summary>🕊️ 已故归档（${fDead.length}）</summary>
+              <div style="display:flex;flex-direction:column;gap:6px">
+                ${fDead.map((n) => renderRosterItem(n, true)).join("")}
+              </div>
+            </details>`
+          : "")
+      );
+    };
+
+    const rosterSearchHtml =
+      allNames.length > 5
+        ? `<input class="nl4-input" id="nl4-roster-search" type="search" value="${esc(rosterFilter)}" placeholder="🔍 筛选角色名 / 别名 / 地点…" style="margin-bottom:6px">`
+        : "";
+    const rosterHtml = `${rosterSearchHtml}<div id="nl4-roster-items" style="display:flex;flex-direction:column;gap:6px">${buildRosterInnerHtml(rosterFilter)}</div>`;
 
     let detailHtml = `<div class="nl4-empty">点击左侧角色查看幕后详情，或在上方手动添加追踪角色。</div>`;
     if (selectedNpc && chatState.npcs[selectedNpc]) {
@@ -903,6 +926,7 @@ export function mountUi(host, engine) {
     const cost = settings.cost;
     const lw = settings.livingWorld;
     const logs = getDiagnosticLogs();
+    const preview = engine.getMainInjectionPreview();
     const activeFields =
       wb.injectMode === "minimal" ? WB_PRESETS.minimal : wb.injectMode === "custom" ? wb.customFields : WB_PRESETS.full;
 
@@ -964,12 +988,23 @@ export function mountUi(host, engine) {
             })}
             ${renderControlRow({
               title: "注入主模型字段模式",
-              desc: "搭配总结/数据库插件时推荐切「极简动态」，插件内部仍保留全量记录",
+              desc: "搭配总结/数据库插件时推荐切「极简动态」，插件内部仍保留全量记录；「藏起来的打算」默认不注入防剧透",
               controlHtml: `<select class="nl4-input nl4-select-sm" data-wb="injectMode">
                 <option value="full" ${wb.injectMode === "full" ? "selected" : ""}>全量注入（默认）</option>
                 <option value="minimal" ${wb.injectMode === "minimal" ? "selected" : ""}>极简动态（仅位置/在做/状态）</option>
                 <option value="custom" ${wb.injectMode === "custom" ? "selected" : ""}>自定义勾选列</option>
               </select>`
+            })}
+            ${renderToggleRow({
+              title: "无世界书时原生直注 NPC 状态表",
+              desc: "关闭世界书写入或未安装酒馆助手时，自动通过酒馆原生扩展提示词直接注入 NPC 状态表",
+              attrs: 'data-wb="nativeInjectFallback"',
+              checked: wb.nativeInjectFallback !== false
+            })}
+            ${renderControlRow({
+              title: "原生提示词注入深度 (Depth)",
+              desc: "活世界边界 / 死亡铁律 / 原生直注状态表在聊天历史中的插入深度（0~10，默认 3）",
+              controlHtml: `<input class="nl4-input nl4-num" type="number" min="0" max="10" data-wb-num="injectDepth" value="${esc(wb.injectDepth ?? 3)}">`
             })}
           </div>
           <div class="nl4-field-chips" style="margin-top:10px">
@@ -977,6 +1012,15 @@ export function mountUi(host, engine) {
               (f) => `<label class="nl4-chip"><input type="checkbox" data-wb-field="${esc(f.key)}" ${activeFields.includes(f.key) ? "checked" : ""}> ${esc(f.label)}</label>`
             ).join("")}
           </div>
+          <details style="margin-top:10px">
+            <summary class="nl4-muted" style="cursor:pointer">👁️ 预览当前注入给主模型的内容（总计约 ${esc(preview.totalTokens)} Token）</summary>
+            <div style="margin-top:6px;display:flex;flex-direction:column;gap:6px">
+              <div class="nl4-muted"><b>通道 A · 世界书条目：</b>${preview.worldbookActive ? "已启用" : "未启用（已走通道 B 原生兜底）"}</div>
+              <pre class="nl4-card nl4-pre" style="margin:0;max-height:150px;overflow:auto;font-size:11.5px">${esc(preview.worldbookText || "（当前无世界书条目输出）")}</pre>
+              <div class="nl4-muted"><b>通道 B · 原生直注（Depth ${esc(wb.injectDepth ?? 3)}）：</b></div>
+              <pre class="nl4-card nl4-pre" style="margin:0;max-height:150px;overflow:auto;font-size:11.5px">${esc(preview.nativeInjectionText || "（当前无额外原生注入内容）")}</pre>
+            </div>
+          </details>
         </div>
 
         <div class="nl4-box">
@@ -1000,8 +1044,11 @@ export function mountUi(host, engine) {
         <div class="nl4-box">
           <div class="nl4-bar">
             <button type="button" class="nl4-btn nl4-btn-sm" data-act="export-chat">导出当前聊天档案 JSON</button>
+            <button type="button" class="nl4-btn nl4-btn-sm" data-act="import-chat">导入聊天档案 JSON</button>
+            <button type="button" class="nl4-btn nl4-btn-sm" data-act="check-update" ${busyText ? "disabled" : ""}>检查线上新版</button>
             <button type="button" class="nl4-btn nl4-btn-sm nl4-btn-danger" data-act="clear-chat">清空当前聊天 NPC 数据</button>
           </div>
+          <input type="file" id="nl4-import-file" accept=".json,application/json" class="nl4-hidden">
         </div>
       </div>`;
   };
@@ -1348,6 +1395,48 @@ export function mountUi(host, engine) {
       return;
     }
 
+    if (act === "import-chat") {
+      panel.querySelector("#nl4-import-file")?.click();
+      return;
+    }
+
+    if (act === "check-update") {
+      busyText = "检查中…";
+      render();
+      try {
+        const urls = [
+          `https://cdn.jsdelivr.net/gh/muzi9277/st-npc-life@main/manifest.json?t=${Date.now()}`,
+          `https://raw.githubusercontent.com/muzi9277/st-npc-life/main/manifest.json?t=${Date.now()}`
+        ];
+        let remoteVer = "";
+        for (const u of urls) {
+          try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 8000);
+            const r = await fetch(u, { cache: "no-store", signal: ctrl.signal }).finally(() => clearTimeout(timer));
+            if (r.ok) {
+              const j = await r.json();
+              if (j?.version) {
+                remoteVer = String(j.version).trim();
+                break;
+              }
+            }
+          } catch {}
+        }
+        if (!remoteVer) {
+          host.toast.warn("未能连接 GitHub 检查版本（请检查网络/代理）");
+        } else if (remoteVer === VERSION) {
+          host.toast.success(`当前已是最新版本 v${VERSION}`);
+        } else {
+          host.toast.info(`发现仓库版本 v${remoteVer}（当前 v${VERSION}），请到酒馆「扩展→管理扩展」点更新后强刷页面`);
+        }
+      } finally {
+        busyText = "";
+        render();
+      }
+      return;
+    }
+
     if (act === "clear-chat") {
       await engine.clearCurrentChat();
       selectedNpc = null;
@@ -1356,8 +1445,57 @@ export function mountUi(host, engine) {
     }
   });
 
+  // Live roster search filter without losing input focus
+  panel.addEventListener("input", (e) => {
+    if (e.target.id === "nl4-roster-search") {
+      rosterFilter = e.target.value;
+      const box = panel.querySelector("#nl4-roster-items");
+      if (box) {
+        const chatState = engine.getChatState();
+        const settings = engine.getSettings();
+        const recent = host.chat.getRecentAssistantMessages(1)[0]?.message || "";
+        const inScene = new Set(detectInSceneNpcs(recent, chatState.npcs));
+        const godView = settings.livingWorld?.godView === true;
+        const allNames = Object.keys(chatState.npcs || {});
+        const q = rosterFilter.trim().toLowerCase();
+        const match = (name) => {
+          if (!q) return true;
+          const c = chatState.npcs[name];
+          return `${name} ${(c?.aliases || []).join(" ")} ${c?.["位置"] || ""} ${c?.["身份锚点"] || ""}`.toLowerCase().includes(q);
+        };
+        const living = allNames.filter((n) => !isDeceased(chatState, n) && match(n));
+        const dead = allNames.filter((n) => isDeceased(chatState, n) && match(n));
+        const rowHtml = (name, isDeadRow) => {
+          const card = chatState.npcs[name];
+          const deadInfo = chatState.world?.deceased?.[name];
+          const hideSpoiler = isDeadRow && deadInfo && !deadInfo.revealed && !godView;
+          const subText = hideSpoiler ? "暂无最新动向（沉浸防剧透中）" : `${card["位置"] || "未知"} · ${card["当前在做"] || "—"}`;
+          return `<button type="button" class="nl4-roster-item ${selectedNpc === name ? "active" : ""} ${isDeadRow && !hideSpoiler ? "dead" : ""}" data-select-npc="${esc(name)}"><div class="nl4-roster-top"><span class="nl4-roster-name">${esc(name)}</span><span>${inScene.has(name) && !isDeadRow ? '<span class="nl4-badge nl4-badge-scene">在场</span>' : ""}${isDeadRow && !hideSpoiler ? '<span class="nl4-badge nl4-badge-dead">已故</span>' : ""}${card.tracked === false ? '<span class="nl4-badge">暂停</span>' : ""}</span></div><div class="nl4-roster-sub">${esc(subText)}</div></button>`;
+        };
+        box.innerHTML =
+          (living.length ? living.map((n) => rowHtml(n, false)).join("") : `<div class="nl4-muted" style="padding:8px 4px">${q ? "无匹配角色" : "暂无在世角色"}</div>`) +
+          (dead.length ? `<details class="nl4-roster-group" ${dead.includes(selectedNpc) || q ? "open" : ""}><summary>🕊️ 已故归档（${dead.length}）</summary><div style="display:flex;flex-direction:column;gap:6px">${dead.map((n) => rowHtml(n, true)).join("")}</div></details>` : "");
+      }
+    }
+  });
+
   panel.addEventListener("change", async (e) => {
     const el = e.target;
+    if (el.id === "nl4-import-file" && el.files?.[0]) {
+      try {
+        const text = await el.files[0].text();
+        const parsed = JSON.parse(text);
+        await engine.importChatState(parsed);
+        selectedNpc = null;
+        host.toast.success("成功导入聊天档案！");
+        render();
+      } catch (err) {
+        host.toast.error(`导入失败：${err?.message || err}`);
+      } finally {
+        el.value = "";
+      }
+      return;
+    }
     if (el.dataset.setting) {
       const k = el.dataset.setting;
       engine.updateSettings((s) => {
@@ -1400,7 +1538,16 @@ export function mountUi(host, engine) {
         else if (k === "injectMode" && el.value === "full") s.worldbook.customFields = [...WB_PRESETS.full];
         return s;
       });
-      await syncWorldbook(host, engine.getChatState(), engine.getSettings()).catch(() => {});
+      await engine.persistState(null, true).catch(() => {});
+      return;
+    }
+    if (el.dataset.wbNum) {
+      const k = el.dataset.wbNum;
+      engine.updateSettings((s) => {
+        s.worldbook[k] = Math.max(0, Math.min(10, Math.round(Number(el.value) || 0)));
+        return s;
+      });
+      await engine.persistState(null, false).catch(() => {});
       return;
     }
     if (el.dataset.wbField) {
@@ -1457,6 +1604,8 @@ export function mountUi(host, engine) {
     destroy() {
       unsub();
       window.removeEventListener("resize", onViewportResize);
+      window.removeEventListener("orientationchange", onViewportResize);
+      window.visualViewport?.removeEventListener("resize", onViewportResize);
       root.remove();
       document.getElementById("nl4-ext-menu-item")?.remove();
       document.getElementById("nl4-st-drawer-box")?.remove();

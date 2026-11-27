@@ -197,6 +197,7 @@ export function advanceFateClocks(chatState, latestText, settings) {
 
   const text = String(latestText || "");
   const careWords = /(照顾|喂食|送饭|救治|包扎|解毒|释放|放出来|探望|看望|陪伴|安抚|给水|送药)/;
+  const negCareRe = /(不|没|未|拒绝|懒得|无暇|无法|不会|不想).{0,4}(照顾|喂食|送饭|救治|包扎|解毒|释放|放出来|探望|看望|陪伴|安抚|给水|送药)/;
   const newlyTriggered = [];
   const newlyRevealed = [];
   const resetClocks = [];
@@ -208,8 +209,8 @@ export function advanceFateClocks(chatState, latestText, settings) {
     const mentionsLoc = Boolean(clk.location && clk.location.length >= 2 && text.includes(clk.location));
 
     if (clk.status === "active") {
-      // If player visits/cares before deadline -> reset elapsed timer!
-      if ((mentionsNpc || mentionsLoc) && careWords.test(text)) {
+      // If player visits/cares before deadline (without negated phrasing) -> reset elapsed timer!
+      if ((mentionsNpc || mentionsLoc) && careWords.test(text) && !negCareRe.test(text)) {
         clk.elapsedDays = 0;
         resetClocks.push(clk);
         continue;

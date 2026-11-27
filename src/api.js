@@ -265,7 +265,10 @@ export async function callSubApi(host, settings, messages, opts = {}) {
     return { ok: true, text, truncated, tokens, durationMs, route };
   } catch (err) {
     const durationMs = Date.now() - started;
-    const reason = err?.name === "AbortError" ? `请求超时（>${Math.round(timeoutMs / 1000)}s）` : String(err?.message || err);
+    let reason = err?.name === "AbortError" ? `请求超时（>${Math.round(timeoutMs / 1000)}s）` : String(err?.message || err);
+    if (api.direct !== false && /failed to fetch|networkerror|load failed|cors/i.test(reason)) {
+      reason += "（疑似浏览器跨域 CORS 拦截，请在「接口」关闭「浏览器直连」改走酒馆转发）";
+    }
     recordDiagnostic({
       kind,
       status: "error",
@@ -355,10 +358,14 @@ export async function fetchModelList(host, settings) {
       if (timer) clearTimeout(timer);
     }
   } catch (err) {
+    let errMsg = err?.name === "AbortError" ? "获取模型列表超时" : String(err?.message || err);
+    if (api.direct !== false && /failed to fetch|networkerror|load failed|cors/i.test(errMsg)) {
+      errMsg += "（疑似浏览器跨域 CORS 拦截，请在「接口」关闭「浏览器直连」改走酒馆转发）";
+    }
     return {
       ok: false,
       models: [],
-      error: err?.name === "AbortError" ? "获取模型列表超时" : String(err?.message || err)
+      error: errMsg
     };
   }
 }

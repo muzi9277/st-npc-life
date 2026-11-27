@@ -1,4 +1,4 @@
-import { GENERIC_TITLES, createBlankNpcCard } from "./constants.js";
+import { GENERIC_TITLES, KEYS, createBlankNpcCard } from "./constants.js";
 import { callSubApi, createTurnBudget, parseJsonRobust, recordDiagnostic } from "./api.js";
 import {
   advanceFateClocks,
@@ -21,6 +21,7 @@ import {
 import {
   loadChatState,
   loadSettings,
+  normalizeChatState,
   rollbackToLatestValidFloor,
   sanitizeNpcCard,
   saveChatState,
@@ -31,10 +32,11 @@ import {
   attachPersonaRefSmart,
   cleanReplyText,
   detectInSceneNpcs,
+  estimateTokens,
   extractStoryDate,
   normalizeAliases
 } from "./text.js";
-import { findNpcPersonaRef, readRelevantWorldbook, syncWorldbook } from "./worldbook.js";
+import { findNpcPersonaRef, formatWorldbookEntry, readRelevantWorldbook, syncWorldbook } from "./worldbook.js";
 
 export const COMPACT_SYSTEM_PROMPT = `你是「NPC Life · 活世界」的后台幕后状态引擎：当主角离开 NPC 视野后，让世界里的 NPC 依然按自身逻辑真实生活。
 只输出严格 JSON（首个非空白字符必须是 {，最后一个必须是 }；禁止 <think> / <reasoning> / Markdown 代码围栏及任何 JSON 外文本）。
@@ -231,6 +233,81 @@ function findExistingNpcByNameOrAlias(npcs, rawName) {
 }
 
 /**
+ * Merge 未完成事项 ledger safely:
+ * - Status-only updates matching 编号 preserve original 内容 & 时间 (never generalizes concrete nouns!)
+ * - New items without 编号 get a unique fresh T# ID without overwriting existing IDs
+ * - Keeps active 进行中 items prioritized alongside recent terminal items (cap 12)
+ */
+function mergeUnfinishedItems(existingList = [], incomingList = [], storyTime = "") {
+  const current = Array.isArray(existingList) ? existingList.map((x) => ({ ...x })) : [];
+  const usedIds = new Set(current.map((x) => String(x["编号"] || "").trim()).filter(Boolean));
+  const nextSeqId = () => {
+    let n = current.length + 1;
+    while (usedIds.has(`T${n}`) || usedIds.has(String(n))) n++;
+    const id = `T${n}`;
+    usedIds.add(id);
+    return id;
+  };
+
+  for (const raw of incomingList || []) {
+    if (!raw || typeof raw !== "object") continue;
+    const rawId = raw["编号"] != null ? String(raw["编号"]).trim() : "";
+    const rawContent = String(raw["内容"] || raw.content || "").trim();
+    const rawStatus = String(raw["状态"] || "").trim();
+    const rawResult = String(raw["结果"] || "").trim();
+    const rawTime = String(raw["时间"] || "").trim();
+
+    let target = rawId ? current.find((x) => String(x["编号"]) === rawId) : null;
+    if (!target && rawContent) {
+      target = current.find((x) => String(x["内容"]) === rawContent);
+    }
+
+    if (target) {
+      if (rawStatus) target["状态"] = rawStatus;
+      if (rawResult) target["结果"] = rawResult;
+      if (!target["时间"] && rawTime) target["时间"] = rawTime;
+    } else if (rawContent) {
+      const assignedId = rawId && !usedIds.has(rawId) ? rawId : nextSeqId();
+      usedIds.add(assignedId);
+      current.push({
+        编号: assignedId,
+        状态: rawStatus || "进行中",
+        时间: rawTime || (storyTime ? storyTime.slice(0, 10) : ""),
+        内容: rawContent,
+        结果: rawResult
+      });
+    }
+  }
+
+  const active = current.filter((x) => x["状态"] === "进行中");
+  const closed = current.filter((x) => x["状态"] !== "进行中");
+  const keepClosedCount = Math.max(0, 12 - active.length);
+  return [...active.slice(-12), ...closed.slice(-keepClosedCount)];
+}
+
+/**
+ * Append 近期关键事件 FIFO up to 3 lines instead of overwriting previous memories.
+ */
+function mergeKeyEvents(existingText, incomingText) {
+  const next = String(incomingText || "").trim();
+  if (!next) return String(existingText || "").trim();
+  const prevLines = String(existingText || "")
+    .split(/\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const incomingLines = next
+    .split(/\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const line of incomingLines) {
+    if (!prevLines.some((p) => p === line || p.includes(line))) {
+      prevLines.push(line);
+    }
+  }
+  return prevLines.slice(-3).join("\n");
+}
+
+/**
  * Merge parsed JSON response from sub-API into chatState safely.
  */
 export function mergeUpdateResponse(chatState, parsedData, settings, playerName = "", inSceneNames = []) {
@@ -347,7 +424,7 @@ export function mergeUpdateResponse(chatState, parsedData, settings, playerName 
       const card = chatState.npcs[existingName];
       const strFields = [
         "位置", "当前在做", "当前状态", "生活状态",
-        "心事", "藏起来的打算", "当前目标", "接下来想做", "近期关键事件",
+        "心事", "藏起来的打算", "当前目标", "接下来想做",
         "衣物/随身物", "伤势/体力"
       ];
       // Preserve stable 身份锚点 unless empty or explicitly provided when short
@@ -361,6 +438,9 @@ export function mergeUpdateResponse(chatState, parsedData, settings, playerName 
           card[f] = val[f].trim();
         }
       }
+      if (typeof val["近期关键事件"] === "string" && val["近期关键事件"].trim()) {
+        card["近期关键事件"] = mergeKeyEvents(card["近期关键事件"], val["近期关键事件"]);
+      }
       const nextAliases = [...(card.aliases || [])];
       if (key !== existingName) nextAliases.push(key);
       if (Array.isArray(val["别名"])) nextAliases.push(...val["别名"]);
@@ -368,12 +448,7 @@ export function mergeUpdateResponse(chatState, parsedData, settings, playerName 
       card.aliases = normalizeAliases(nextAliases, existingName);
 
       if (Array.isArray(val["未完成事项"]) && val["未完成事项"].length) {
-        const sanitized = sanitizeNpcCard(existingName, { 未完成事项: val["未完成事项"] })["未完成事项"];
-        const byId = new Map((card["未完成事项"] || []).map((x) => [x["编号"], x]));
-        for (const item of sanitized) {
-          byId.set(item["编号"], item);
-        }
-        card["未完成事项"] = Array.from(byId.values()).slice(-12);
+        card["未完成事项"] = mergeUnfinishedItems(card["未完成事项"], val["未完成事项"], chatState.storyTime);
       }
       changedNpcs.push(existingName);
     }
@@ -435,6 +510,12 @@ export function createNpcLifeEngine(host) {
     return settings;
   };
 
+  const computeNativeInjOpts = () => {
+    const wbActive = settings.worldbook?.writeTarget !== "off" && host.worldbook.isAvailable();
+    const includeNpcTable = !wbActive && settings.worldbook?.nativeInjectFallback !== false;
+    return { wbActive, includeNpcTable, depth: settings.worldbook?.injectDepth ?? 3 };
+  };
+
   const persistState = async (floorId = null, shouldSyncWb = true) => {
     if (Number.isSafeInteger(floorId) && floorId >= 0) {
       chatState = saveFloorSnapshot(host, chatState, floorId);
@@ -449,8 +530,9 @@ export function createNpcLifeEngine(host) {
       }
     }
     const recent = host.chat.getRecentAssistantMessages(1)[0]?.message || "";
-    const inj = buildMainPromptInjection(chatState, settings, recent);
-    await host.prompt.setInjection(inj);
+    const { includeNpcTable, depth } = computeNativeInjOpts();
+    const inj = buildMainPromptInjection(chatState, settings, recent, { includeNpcTable });
+    await host.prompt.setInjection(inj, depth);
     emitChange();
     return chatState;
   };
@@ -483,6 +565,18 @@ export function createNpcLifeEngine(host) {
       chatState.world.deceased[cleanNew] = chatState.world.deceased[oldName];
       delete chatState.world.deceased[oldName];
     }
+    for (const k of chatState.world.ledger?.knows || []) {
+      if (k.npc === oldName) k.npc = cleanNew;
+    }
+    for (const q of chatState.world.queue || []) {
+      if (q.npc === oldName) q.npc = cleanNew;
+    }
+    for (const r of chatState.world.rumors || []) {
+      if (r.originNpc === oldName) r.originNpc = cleanNew;
+      if (Array.isArray(r.heardBy)) {
+        r.heardBy = r.heardBy.map((n) => (n === oldName ? cleanNew : n));
+      }
+    }
     return await persistState(null, true);
   };
 
@@ -506,11 +600,32 @@ export function createNpcLifeEngine(host) {
   };
 
   const clearCurrentChat = async () => {
+    // Prune all saved floor snapshots so cleared NPCs cannot resurrect on future swipe/delete
+    for (const floorId of chatState.snapshotFloors || []) {
+      host.storage.deleteMessageMeta?.(floorId, KEYS.FLOOR_SNAP);
+    }
     chatState = loadChatState({
       ...host,
       storage: { ...host.storage, readChatMeta: () => null, readLegacyChat: () => null }
     });
     return await persistState(null, true);
+  };
+
+  const importChatState = async (rawObj) => {
+    if (!rawObj || typeof rawObj !== "object" || (!rawObj.npcs && !rawObj.world)) {
+      throw new Error("无效的聊天档案 JSON 格式");
+    }
+    chatState = normalizeChatState(rawObj);
+    return await persistState(null, true);
+  };
+
+  const getMainInjectionPreview = () => {
+    const recent = host.chat.getRecentAssistantMessages(1)[0]?.message || "";
+    const { wbActive, includeNpcTable } = computeNativeInjOpts();
+    const worldbookText = wbActive ? formatWorldbookEntry(chatState, settings) : "";
+    const nativeInjectionText = buildMainPromptInjection(chatState, settings, recent, { includeNpcTable });
+    const totalTokens = estimateTokens(worldbookText) + estimateTokens(nativeInjectionText);
+    return { worldbookText, worldbookActive: wbActive, nativeInjectionText, totalTokens };
   };
 
   // --- Main Turn Update (called on MESSAGE_RECEIVED or manual button) ---
@@ -694,7 +809,7 @@ export function createNpcLifeEngine(host) {
   // --- Before Main Generation (single-flight per turn!) ---
   const handleBeforeGeneration = async () => {
     if (!settings.enabled) {
-      await host.prompt.setInjection("");
+      await host.prompt.setInjection("", settings.worldbook?.injectDepth ?? 3);
       return;
     }
     const lastId = host.chat.lastMessageId();
@@ -717,8 +832,9 @@ export function createNpcLifeEngine(host) {
           }
         }
 
-        const inj = buildMainPromptInjection(chatState, settings, cleanRecent);
-        await host.prompt.setInjection(inj);
+        const { includeNpcTable, depth } = computeNativeInjOpts();
+        const inj = buildMainPromptInjection(chatState, settings, cleanRecent, { includeNpcTable });
+        await host.prompt.setInjection(inj, depth);
         emitChange();
       } finally {
         runningBeforeGen = null;
@@ -736,7 +852,8 @@ export function createNpcLifeEngine(host) {
         await syncWorldbook(host, chatState, settings);
       } catch {}
       const recent = host.chat.getRecentAssistantMessages(1)[0]?.message || "";
-      await host.prompt.setInjection(buildMainPromptInjection(chatState, settings, recent));
+      const { includeNpcTable, depth } = computeNativeInjOpts();
+      await host.prompt.setInjection(buildMainPromptInjection(chatState, settings, recent, { includeNpcTable }), depth);
       emitChange();
     }
     return res;
@@ -760,6 +877,8 @@ export function createNpcLifeEngine(host) {
     toggleNpcTracked,
     reviveNpc,
     clearCurrentChat,
+    importChatState,
+    getMainInjectionPreview,
     runUpdateTurn,
     handleBeforeGeneration,
     handleRollback,
