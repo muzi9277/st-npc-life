@@ -76,7 +76,7 @@
 /* ===== GPU-Smooth Draggable Floating Globe Orb + Half-Hidden Edge Dock ===== */
 .nl4-orb {
   position: fixed;
-  z-index: 2147483000;
+  z-index: 3200;
   width: 48px;
   height: 48px;
   padding: 0;
@@ -170,7 +170,7 @@
 /* ===== Bifa-style GPU-Draggable Book-Ledger Floating Panel ===== */
 .nl4-panel {
   position: fixed;
-  z-index: 2147483010;
+  z-index: 3300;
   width: min(1040px, 94vw);
   height: min(720px, calc(100dvh - 56px));
   min-width: 560px;
@@ -920,6 +920,47 @@
   padding: 1px 7px;
   font-size: 11px;
   opacity: 0.85;
+}
+
+.nl4-notice {
+  position: absolute;
+  top: 56px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  max-width: min(460px, 88%);
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  text-align: center;
+  cursor: pointer;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.45);
+  border: 1px solid var(--nl4-line-strong);
+  background: var(--nl4-surface-2);
+  color: var(--nl4-ink);
+  animation: nl4PanelIn 0.14s ease-out;
+}
+
+.nl4-notice-success {
+  border-color: var(--nl4-success);
+  color: var(--nl4-success);
+}
+
+.nl4-notice-warn {
+  border-color: var(--nl4-accent);
+  color: var(--nl4-accent-text);
+}
+
+.nl4-notice-error {
+  border-color: var(--nl4-danger);
+  background: var(--nl4-danger-soft);
+  color: var(--nl4-danger);
+}
+
+.nl4-notice-info {
+  border-color: var(--nl4-accent);
+  color: var(--nl4-ink);
 }
 
 /* ===== Dedicated Mobile UI: Compact Header +「人 | 信息」Side-by-Side Split View ===== */
