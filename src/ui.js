@@ -115,6 +115,9 @@ export function mountUi(host, engine) {
   let dockTimer = null;
   let bootRevealActive = true;
   let bootRevealTimer = null;
+  let suppressSubRender = false;
+  let pendingDeferredRender = false;
+  let focusOutTimer = null;
   const healTimers = [];
   let isOrbDragging = false;
   let theme = readJsonLS(THEME_KEY, "dark") === "light" ? "light" : "dark";
@@ -250,15 +253,26 @@ export function mountUi(host, engine) {
 
   // Keep orb & panel visible when viewport resizes, keyboard opens, or phone rotates
   const onViewportResize = () => {
-    root.dataset.layout = resolveLayout();
+    const prevLayout = root.dataset.layout;
+    const nextLayout = resolveLayout();
+    const layoutChanged = nextLayout !== prevLayout;
+    root.dataset.layout = nextLayout;
+
+    // Never wipe panel DOM or thrash geometry while user is typing (mobile soft keyboard triggers resize!)
+    if (isPanelTextInputFocused()) {
+      return;
+    }
+
     const curLeft = parseFloat(orb.style.left);
     const curTop = parseFloat(orb.style.top);
     if (Number.isFinite(curLeft) && Number.isFinite(curTop)) {
       applyOrbPos({ left: curLeft, top: curTop }, false);
     }
-    if (isOpen) {
+    if (isOpen && nextLayout === "desktop") {
       const pr = panel.getBoundingClientRect();
       applyWinRect({ left: pr.left, top: pr.top, width: pr.width, height: pr.height });
+    }
+    if (isOpen && layoutChanged) {
       render();
     }
   };
@@ -564,6 +578,50 @@ export function mountUi(host, engine) {
             : `<span class="nl4-foot-right nl4-desktop-only">拖动标题栏可移动 · 右下角可缩放</span>`
         }
       </div>`;
+  };
+
+  const isPanelTextInputFocused = () => {
+    const ae = typeof document !== "undefined" ? document.activeElement : null;
+    return Boolean(
+      ae &&
+        panel.contains(ae) &&
+        (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || ae.isContentEditable)
+    );
+  };
+
+  const refreshFootAndOrb = () => {
+    syncOrbStatus();
+    if (!isOpen) return;
+    const footEl = panel.querySelector(".nl4-foot");
+    if (footEl) {
+      footEl.outerHTML = renderFoot(engine.getSettings(), engine.getBudget().snapshot());
+    }
+  };
+
+  const updateSettingsSilently = (updater) => {
+    suppressSubRender = true;
+    try {
+      engine.updateSettings(updater);
+    } finally {
+      suppressSubRender = false;
+    }
+    refreshFootAndOrb();
+  };
+
+  const flushApiInputs = () => {
+    const els = panel.querySelectorAll("[data-api]");
+    if (!els.length) return;
+    updateSettingsSilently((s) => {
+      for (const el of els) {
+        const k = el.dataset.api;
+        if (!k) continue;
+        if (el.tagName === "SELECT" && !el.value) continue;
+        if (el.type === "checkbox") s.api[k] = el.checked;
+        else if (el.type === "number") s.api[k] = Number(el.value);
+        else s.api[k] = el.value.trim();
+      }
+      return s;
+    });
   };
 
   // Tab 1: Master/Detail Characters + Dedicated Deceased Memorial Archive
@@ -1174,6 +1232,10 @@ export function mountUi(host, engine) {
     syncOrbStatus();
     mountStEntryPoints();
     if (!isOpen) return;
+    const prevMainScroll = panel.querySelector(".nl4-main")?.scrollTop ?? 0;
+    const prevRosterScroll = panel.querySelector(".nl4-npc-roster")?.scrollTop ?? 0;
+    const prevDetailScroll = panel.querySelector(".nl4-npc-detail")?.scrollTop ?? 0;
+
     const settings = engine.getSettings();
     const chatState = engine.getChatState();
     const budgetSnap = engine.getBudget().snapshot();
@@ -1191,6 +1253,13 @@ export function mountUi(host, engine) {
       renderFoot(settings, budgetSnap) +
       renderRightBookTabs(chatState) +
       `<div class="nl4-resize" title="拖拽缩放窗口"></div>`;
+
+    const nextMain = panel.querySelector(".nl4-main");
+    if (nextMain && prevMainScroll > 0) nextMain.scrollTop = prevMainScroll;
+    const nextRoster = panel.querySelector(".nl4-npc-roster");
+    if (nextRoster && prevRosterScroll > 0) nextRoster.scrollTop = prevRosterScroll;
+    const nextDetail = panel.querySelector(".nl4-npc-detail");
+    if (nextDetail && prevDetailScroll > 0) nextDetail.scrollTop = prevDetailScroll;
   };
 
   panel.addEventListener("dblclick", (e) => {
@@ -1420,6 +1489,7 @@ export function mountUi(host, engine) {
     }
 
     if (act === "fetch-models") {
+      flushApiInputs();
       busyText = "拉取中…";
       render();
       try {
@@ -1438,6 +1508,7 @@ export function mountUi(host, engine) {
     }
 
     if (act === "test-api") {
+      flushApiInputs();
       busyText = "测试中…";
       render();
       try {
@@ -1636,7 +1707,7 @@ export function mountUi(host, engine) {
     }
     if (el.dataset.settingNum) {
       const k = el.dataset.settingNum;
-      engine.updateSettings((s) => {
+      updateSettingsSilently((s) => {
         s[k] = Math.max(1, Math.min(6, Math.round(Number(el.value) || 2)));
         return s;
       });
@@ -1644,18 +1715,25 @@ export function mountUi(host, engine) {
     }
     if (el.dataset.lw) {
       const k = el.dataset.lw;
-      engine.updateSettings((s) => {
+      const fn = (s) => {
         if (el.type === "checkbox") s.livingWorld[k] = el.checked;
         else if (el.tagName === "SELECT") s.livingWorld[k] = el.value;
         else s.livingWorld[k] = Math.max(1, Math.min(6, Math.round(Number(el.value) || 3)));
         return s;
-      });
+      };
+      if (el.type === "checkbox" || el.tagName === "SELECT") engine.updateSettings(fn);
+      else updateSettingsSilently(fn);
       await engine.persistState(null, false).catch(() => {});
       return;
     }
     if (el.dataset.api) {
       const k = el.dataset.api;
-      engine.updateSettings((s) => {
+      if (el.tagName === "SELECT" && k === "model") {
+        if (!el.value) return;
+        const textModelInput = panel.querySelector('input[data-api="model"]');
+        if (textModelInput) textModelInput.value = el.value;
+      }
+      updateSettingsSilently((s) => {
         if (el.type === "checkbox") s.api[k] = el.checked;
         else if (el.type === "number") s.api[k] = Number(el.value);
         else s.api[k] = el.value.trim();
@@ -1676,7 +1754,7 @@ export function mountUi(host, engine) {
     }
     if (el.dataset.wbNum) {
       const k = el.dataset.wbNum;
-      engine.updateSettings((s) => {
+      updateSettingsSilently((s) => {
         s.worldbook[k] = Math.max(0, Math.min(10, Math.round(Number(el.value) || 0)));
         return s;
       });
@@ -1704,7 +1782,7 @@ export function mountUi(host, engine) {
     }
     if (el.dataset.cost) {
       const k = el.dataset.cost;
-      engine.updateSettings((s) => {
+      const fn = (s) => {
         if (el.type === "checkbox") s.cost[k] = el.checked;
         else if (k === "maxSubApiCallsPerTurn") s.cost[k] = Math.max(0, Math.min(10, Math.round(Number(el.value) || 0)));
         else if (k === "worldbookCharCap") s.cost[k] = Math.max(1000, Math.min(30000, Math.round(Number(el.value) || 6000)));
@@ -1713,7 +1791,9 @@ export function mountUi(host, engine) {
           s.cost[k] = Number.isFinite(v) && v > 0 ? Math.max(800, Math.min(20000, Math.round(v))) : 0;
         }
         return s;
-      });
+      };
+      if (el.type === "checkbox") engine.updateSettings(fn);
+      else updateSettingsSilently(fn);
       return;
     }
     if (el.dataset.segToggle != null) {
@@ -1748,7 +1828,28 @@ export function mountUi(host, engine) {
   window.addEventListener("pageshow", onVisibleOrShow);
   document.addEventListener("visibilitychange", onVisibleOrShow);
 
-  const unsub = engine.subscribe(() => render());
+  const unsub = engine.subscribe(() => {
+    if (suppressSubRender) return;
+    if (isOpen && isPanelTextInputFocused()) {
+      pendingDeferredRender = true;
+      refreshFootAndOrb();
+      return;
+    }
+    render();
+  });
+
+  panel.addEventListener("focusout", () => {
+    if (!pendingDeferredRender) return;
+    if (focusOutTimer) clearTimeout(focusOutTimer);
+    focusOutTimer = setTimeout(() => {
+      focusOutTimer = null;
+      if (pendingDeferredRender && !isPanelTextInputFocused()) {
+        pendingDeferredRender = false;
+        render();
+      }
+    }, 150);
+  });
+
   ensureMounted();
 
   // Show orb fully for 3s on cold boot so mobile users immediately spot it before gentle edge-tuck
@@ -1778,6 +1879,10 @@ export function mountUi(host, engine) {
       if (bootRevealTimer) {
         clearTimeout(bootRevealTimer);
         bootRevealTimer = null;
+      }
+      if (focusOutTimer) {
+        clearTimeout(focusOutTimer);
+        focusOutTimer = null;
       }
       while (healTimers.length) {
         clearTimeout(healTimers.pop());
