@@ -18,6 +18,7 @@
   --nl4-success: #5bbf82;
   --nl4-danger: #d96b6b;
   --nl4-danger-soft: rgba(217, 107, 107, 0.13);
+  --nl4-error-bg: #3a1f1f;
   --nl4-input-bg: #151311;
   --nl4-switch-off: rgba(235, 224, 205, 0.18);
   --nl4-switch-thumb: #faf6ee;
@@ -53,6 +54,7 @@
   --nl4-success: #2f855a;
   --nl4-danger: #c53030;
   --nl4-danger-soft: rgba(197, 48, 48, 0.1);
+  --nl4-error-bg: #fdeaea;
   --nl4-input-bg: #fbf8f2;
   --nl4-switch-off: rgba(88, 69, 44, 0.24);
   --nl4-switch-thumb: #ffffff;
@@ -939,7 +941,12 @@
   border: 1px solid var(--nl4-line-strong);
   background: var(--nl4-surface-2);
   color: var(--nl4-ink);
-  animation: nl4PanelIn 0.14s ease-out;
+  animation: nl4NoticeIn 0.14s ease-out;
+}
+
+@keyframes nl4NoticeIn {
+  from { opacity: 0; transform: translate(-50%, -6px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
 }
 
 .nl4-notice-success {
@@ -954,7 +961,7 @@
 
 .nl4-notice-error {
   border-color: var(--nl4-danger);
-  background: var(--nl4-danger-soft);
+  background: var(--nl4-error-bg);
   color: var(--nl4-danger);
 }
 
