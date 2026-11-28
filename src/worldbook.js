@@ -229,6 +229,14 @@ export async function syncWorldbook(host, chatState, settings) {
     bookName = await host.worldbook.getOrCreateChatWorldbook();
   }
 
+  // Clean up any stale NPC Life entries from other books when user switched writeTarget
+  const allBooks = await collectAllRelevantBooks(host);
+  for (const b of allBooks) {
+    if (b && b !== bookName) {
+      await host.worldbook.removeEntries(b, isOwnWorldbookEntry);
+    }
+  }
+
   const content = formatWorldbookEntry(chatState, settings);
   if (!content) {
     await host.worldbook.removeEntries(bookName, isOwnWorldbookEntry);

@@ -83,6 +83,21 @@ function normalizeModelsEndpoint(rawUrl) {
   return `${u}/models`;
 }
 
+function normalizeRelayBaseUrl(rawUrl) {
+  return String(rawUrl || "")
+    .trim()
+    .replace(/\/chat\/completions\/?$/i, "")
+    .replace(/\/+$/, "");
+}
+
+function extractTextContent(rawContent) {
+  if (typeof rawContent === "string") return rawContent;
+  if (Array.isArray(rawContent)) {
+    return rawContent.map((p) => (typeof p === "string" ? p : String(p?.text || ""))).join("");
+  }
+  return "";
+}
+
 function isMaxTokensConflict(msg) {
   const s = String(msg || "").toLowerCase();
   return (
@@ -94,7 +109,23 @@ function isMaxTokensConflict(msg) {
 
 function isMaxTokensRangeErr(msg) {
   const s = String(msg || "").toLowerCase();
-  return s.includes("max_tokens") && (s.includes("range") || s.includes("exceed") || s.includes("too large") || s.includes("invalid"));
+  return (
+    s.includes("max_tokens") &&
+    (s.includes("range") ||
+      s.includes("exceed") ||
+      s.includes("too large") ||
+      s.includes("invalid") ||
+      s.includes("less than") ||
+      s.includes("<=") ||
+      s.includes("maximum") ||
+      s.includes("between") ||
+      s.includes("limit") ||
+      s.includes("上限") ||
+      s.includes("范围") ||
+      s.includes("超出") ||
+      s.includes("不能超过") ||
+      s.includes("大于"))
+  );
 }
 
 function isErrorTextPayload(text) {
@@ -102,7 +133,7 @@ function isErrorTextPayload(text) {
   return s.startsWith("[API 错误]") || s.startsWith("[API Error]") || /^API Error:/i.test(s);
 }
 
-async function fetchDirectOnce(api, messages, maxTokens, signal) {
+async function fetchDirectOnce(api, messages, maxTokens, signal, opts = {}) {
   const url = normalizeEndpoint(api.apiurl);
   const headers = { "Content-Type": "application/json" };
   if (api.key && String(api.key).trim()) {
@@ -137,19 +168,34 @@ async function fetchDirectOnce(api, messages, maxTokens, signal) {
     throw err;
   }
 
+  if (!data && /^\s*</.test(rawText)) {
+    throw new Error("副 API 返回了网页 HTML 而非 JSON，请检查 API 地址末尾是否缺少 /v1");
+  }
+
   const choice = data?.choices?.[0];
-  const content = choice?.message?.content ?? choice?.text ?? "";
+  const content = extractTextContent(choice?.message?.content ?? choice?.text ?? "");
+  const reasoning = extractTextContent(choice?.message?.reasoning_content ?? choice?.message?.reasoning ?? "");
   const finishReason = String(choice?.finish_reason || "");
-  const str = String(content || "").trim();
-  if (!str) throw new Error("副 API 返回内容为空");
+  const str = content.trim();
+  if (!str) {
+    if (reasoning.trim()) {
+      if (opts.kind === "test") {
+        return { text: '{"ok":true}', truncated: finishReason === "length", reasoningOnly: true };
+      }
+      throw new Error(
+        "副 API 仅输出了思考过程（reasoning_content），正文为空——请将最大输出 Token 调至 8192~16384 或关闭模型的深度思考"
+      );
+    }
+    throw new Error("副 API 返回内容为空");
+  }
   if (isErrorTextPayload(str)) throw new Error(`接口返回错误: ${str}`);
-  return { text: str, truncated: finishReason === "length" };
+  return { text: str, truncated: finishReason === "length", reasoningOnly: false };
 }
 
-async function callViaTavernRelayOnce(host, api, messages, maxTokens) {
+async function callViaTavernRelayOnce(host, api, messages, maxTokens, timeoutMs = 90000) {
   const th = host.getTH?.();
   if (!th || typeof th.generateRaw !== "function") {
-    throw new Error("未检测到酒馆转发接口（TavernHelper.generateRaw），请在「接口与提示词」开启直连模式");
+    throw new Error("未检测到酒馆转发接口（TavernHelper.generateRaw），请在「接口」开启直连模式");
   }
   // CRITICAL: Pass non-empty ordered_prompts + max_chat_history: 0 so ST NEVER injects main chat history!
   const orderedPrompts = messages.map((m) => ({
@@ -157,7 +203,7 @@ async function callViaTavernRelayOnce(host, api, messages, maxTokens) {
     content: String(m.content || "")
   }));
   const customApi = {
-    apiurl: String(api.apiurl).trim(),
+    apiurl: normalizeRelayBaseUrl(api.apiurl),
     key: String(api.key || "").trim(),
     model: String(api.model).trim(),
     temperature: Number.isFinite(Number(api.temperature)) ? Number(api.temperature) : 0.5
@@ -166,16 +212,34 @@ async function callViaTavernRelayOnce(host, api, messages, maxTokens) {
     customApi.max_tokens = Math.round(Number(maxTokens));
   }
 
-  const raw = await th.generateRaw({
-    ordered_prompts: orderedPrompts,
-    custom_api: customApi,
-    max_chat_history: 0,
-    should_stream: false
-  });
+  let timer = null;
+  let raw;
+  try {
+    raw = await Promise.race([
+      th.generateRaw({
+        ordered_prompts: orderedPrompts,
+        custom_api: customApi,
+        max_chat_history: 0,
+        should_stream: false
+      }),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const err = new Error(`请求超时（>${Math.round(timeoutMs / 1000)}s）`);
+          err.name = "AbortError";
+          reject(err);
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   const str = String(raw || "").trim();
   if (!str) throw new Error("副 API 转发返回为空");
+  if (/^\s*</.test(str)) {
+    throw new Error("副 API 转发返回了网页 HTML 而非 JSON，请检查 API 地址是否正确");
+  }
   if (isErrorTextPayload(str)) throw new Error(`接口返回错误: ${str}`);
-  return { text: str, truncated: false };
+  return { text: str, truncated: false, reasoningOnly: false };
 }
 
 /**
@@ -193,7 +257,7 @@ export async function callSubApi(host, settings, messages, opts = {}) {
       tokens: 0,
       detail: "未配置副 API（已跳过，绝不调用主模型）"
     });
-    return { ok: false, skipped: true, reason: "未配置副 API（请在「接口与提示词」填写接口地址与模型）" };
+    return { ok: false, skipped: true, reason: "未配置副 API（请在「接口」填写接口地址与模型）" };
   }
 
   if (opts.budget) {
@@ -219,9 +283,9 @@ export async function callSubApi(host, settings, messages, opts = {}) {
     const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
     try {
       if (api.direct !== false) {
-        return await fetchDirectOnce(api, messages, mt, controller?.signal);
+        return await fetchDirectOnce(api, messages, mt, controller?.signal, { kind });
       }
-      return await callViaTavernRelayOnce(host, api, messages, mt);
+      return await callViaTavernRelayOnce(host, api, messages, mt, timeoutMs);
     } finally {
       if (timer) clearTimeout(timer);
     }
@@ -235,8 +299,16 @@ export async function callSubApi(host, settings, messages, opts = {}) {
       const msg = String(err?.message || err);
       if (isMaxTokensConflict(msg)) {
         result = await execOnce(null);
-      } else if (isMaxTokensRangeErr(msg) && maxTokens > 4096) {
-        result = await execOnce(4096);
+      } else if (isMaxTokensRangeErr(msg) && maxTokens != null) {
+        try {
+          result = await execOnce(null);
+        } catch (omitErr) {
+          if (maxTokens > 8192) {
+            result = await execOnce(8192);
+          } else {
+            throw omitErr;
+          }
+        }
       } else if (err?.status === 429 && !opts.noRetry429) {
         await new Promise((r) => setTimeout(r, 1200));
         result = await execOnce(maxTokens);
@@ -247,6 +319,7 @@ export async function callSubApi(host, settings, messages, opts = {}) {
 
     const text = result.text;
     const truncated = Boolean(result.truncated);
+    const reasoningOnly = Boolean(result.reasoningOnly);
     const durationMs = Date.now() - started;
     recordDiagnostic({
       kind,
@@ -262,7 +335,7 @@ export async function callSubApi(host, settings, messages, opts = {}) {
         ? `成功但输出被截断（返回 ${text.length} 字，建议在「接口」调大最大输出 Token）`
         : `成功（返回 ${text.length} 字）`
     });
-    return { ok: true, text, truncated, tokens, durationMs, route };
+    return { ok: true, text, truncated, reasoningOnly, tokens, durationMs, route };
   } catch (err) {
     const durationMs = Date.now() - started;
     let reason = err?.name === "AbortError" ? `请求超时（>${Math.round(timeoutMs / 1000)}s）` : String(err?.message || err);
@@ -293,7 +366,7 @@ export async function testSubApiConnection(host, settings) {
       { role: "system", content: "You are a connectivity test. Reply with a single JSON object: {\"ok\":true}" },
       { role: "user", content: "ping" }
     ],
-    { kind: "test", bypassBudget: true, maxTokens: 64, noRetry429: true }
+    { kind: "test", bypassBudget: true, maxTokens: 1024, noRetry429: true }
   );
 }
 

@@ -502,6 +502,7 @@ export function createNpcLifeEngine(host) {
 
   const listeners = new Set();
   let runningUpdate = null;
+  let runningUpdateForce = false;
   let lastGenGuardKey = "";
   let runningBeforeGen = null;
 
@@ -671,9 +672,17 @@ export function createNpcLifeEngine(host) {
 
   // --- Main Turn Update (called on MESSAGE_RECEIVED or manual button) ---
   const runUpdateTurn = async ({ force = false, bypassBudget = false } = {}) => {
-    if (runningUpdate) return runningUpdate;
+    if (runningUpdate) {
+      if (force && !runningUpdateForce) {
+        const prevRes = await runningUpdate.catch(() => null);
+        if (prevRes && !prevRes.skipped) return prevRes;
+      } else {
+        return runningUpdate;
+      }
+    }
     if (!settings.enabled && !force) return { ok: false, skipped: true, reason: "插件已关闭" };
 
+    runningUpdateForce = Boolean(force);
     runningUpdate = (async () => {
       try {
         const recentCount = Math.max(1, Math.min(6, Number(settings.recentReplyCount) || 2));
@@ -693,10 +702,12 @@ export function createNpcLifeEngine(host) {
         const repliesText = cleanedReplies.join("\n\n");
         const latestClean = cleanReplyText(latestMsg.message, 0);
 
-        if (!force && latestClean.length < (Number(settings.minReplyChars) || 120)) {
-          recordDiagnostic({ kind: "update", status: "skipped", detail: `最新回复不足 ${settings.minReplyChars} 字` });
+        const minChars = Number(settings.minReplyChars) || 120;
+        if (!force && latestClean.length < minChars) {
+          const msg = `跳过自动更新：当前聊天最新正文仅 ${latestClean.length} 字（不足 ${minChars} 字，非副 API 问题）`;
+          recordDiagnostic({ kind: "update", status: "skipped", detail: msg });
           emitChange();
-          return { ok: false, skipped: true, reason: "回复过短" };
+          return { ok: false, skipped: true, reason: msg };
         }
 
         const turnKey = `${host.chat.currentChatId()}|${floorId}`;
@@ -841,6 +852,7 @@ export function createNpcLifeEngine(host) {
         };
       } finally {
         runningUpdate = null;
+        runningUpdateForce = false;
       }
     })();
 

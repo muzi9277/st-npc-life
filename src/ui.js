@@ -372,6 +372,7 @@ export function mountUi(host, engine) {
 
     panel.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 && e.pointerType === "mouse") return;
+      if (resolveLayout() === "mobile") return;
 
       const resizeHandle = e.target.closest(".nl4-resize");
       if (resizeHandle) {
@@ -620,9 +621,9 @@ export function mountUi(host, engine) {
     if (!els.length) return;
     updateSettingsSilently((s) => {
       for (const el of els) {
+        if (el.tagName === "SELECT") continue;
         const k = el.dataset.api;
         if (!k) continue;
-        if (el.tagName === "SELECT" && !el.value) continue;
         if (el.type === "checkbox") s.api[k] = el.checked;
         else if (el.type === "number") s.api[k] = Number(el.value);
         else s.api[k] = el.value.trim();
@@ -1268,6 +1269,7 @@ export function mountUi(host, engine) {
     syncOrbStatus();
     mountStEntryPoints();
     if (!isOpen) return;
+    pendingDeferredRender = false;
     const prevMainScroll = panel.querySelector(".nl4-main")?.scrollTop ?? 0;
     const prevRosterScroll = panel.querySelector(".nl4-npc-roster")?.scrollTop ?? 0;
     const prevDetailScroll = panel.querySelector(".nl4-npc-detail")?.scrollTop ?? 0;
@@ -1300,6 +1302,7 @@ export function mountUi(host, engine) {
   };
 
   panel.addEventListener("dblclick", (e) => {
+    if (resolveLayout() === "mobile") return;
     if (e.target.closest(".nl4-topbar") && !e.target.closest("button")) {
       centerPanel();
     }
@@ -1308,6 +1311,7 @@ export function mountUi(host, engine) {
   panel.addEventListener("click", async (e) => {
     const tabBtn = e.target.closest("[data-tab]");
     if (tabBtn) {
+      if (isPanelTextInputFocused()) document.activeElement?.blur?.();
       activeTab = tabBtn.dataset.tab;
       editingNpc = null;
       peekedSecretNpc = null;
@@ -1317,6 +1321,7 @@ export function mountUi(host, engine) {
 
     const rosterBtn = e.target.closest("[data-select-npc]");
     if (rosterBtn) {
+      if (isPanelTextInputFocused()) document.activeElement?.blur?.();
       selectedNpc = rosterBtn.dataset.selectNpc;
       editingNpc = null;
       peekedSecretNpc = null;
@@ -1326,6 +1331,7 @@ export function mountUi(host, engine) {
 
     const segDel = e.target.closest("[data-seg-del]");
     if (segDel) {
+      if (isPanelTextInputFocused()) document.activeElement?.blur?.();
       const idx = Number(segDel.dataset.segDel);
       engine.updateSettings((s) => {
         s.customSegments.splice(idx, 1);
@@ -1337,6 +1343,9 @@ export function mountUi(host, engine) {
     const actBtn = e.target.closest("[data-act]");
     if (!actBtn) return;
     const act = actBtn.dataset.act;
+    if (act !== "dismiss-notice" && isPanelTextInputFocused()) {
+      document.activeElement?.blur?.();
+    }
 
     if (act === "close") return close();
     if (act === "dismiss-notice") {
@@ -1368,6 +1377,7 @@ export function mountUi(host, engine) {
     }
 
     if (act === "run-now") {
+      flushApiInputs();
       busyText = "更新中…";
       render();
       try {
@@ -1559,8 +1569,14 @@ export function mountUi(host, engine) {
       render();
       try {
         const res = await testSubApiConnection(host, engine.getSettings());
-        if (res.ok) notify("success", `连通成功（${res.route}，耗时 ${(res.durationMs / 1000).toFixed(1)}s）`);
-        else notify("error", `连通失败：${res.error || res.reason}`);
+        if (res.ok) {
+          notify(
+            "success",
+            res.reasoningOnly
+              ? `连通成功（${res.route}，检测到思考模型，建议最大输出设 8192~16384 或关闭深度思考）`
+              : `连通成功（${res.route}，耗时 ${(res.durationMs / 1000).toFixed(1)}s）`
+          );
+        } else notify("error", `连通失败：${res.error || res.reason}`);
       } finally {
         busyText = "";
         render();
@@ -1856,12 +1872,14 @@ export function mountUi(host, engine) {
       document.body.appendChild(root);
     }
     mountStEntryPoints();
-    const curLeft = parseFloat(orb.style.left);
-    const curTop = parseFloat(orb.style.top);
-    if (Number.isFinite(curLeft) && Number.isFinite(curTop)) {
-      applyOrbPos({ left: curLeft, top: curTop }, false);
-    } else {
-      applyOrbPos(readJsonLS(POS_ORB_KEY), false);
+    if (!isOrbDragging) {
+      const curLeft = parseFloat(orb.style.left);
+      const curTop = parseFloat(orb.style.top);
+      if (Number.isFinite(curLeft) && Number.isFinite(curTop)) {
+        applyOrbPos({ left: curLeft, top: curTop }, false);
+      } else {
+        applyOrbPos(readJsonLS(POS_ORB_KEY), false);
+      }
     }
     syncOrbStatus();
   };
