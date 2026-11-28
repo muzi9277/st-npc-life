@@ -118,6 +118,8 @@ export function mountUi(host, engine) {
   let suppressSubRender = false;
   let pendingDeferredRender = false;
   let focusOutTimer = null;
+  let panelNotice = null;
+  let noticeTimer = null;
   const healTimers = [];
   let isOrbDragging = false;
   let theme = readJsonLS(THEME_KEY, "dark") === "light" ? "light" : "dark";
@@ -481,6 +483,11 @@ export function mountUi(host, engine) {
     isOpen = false;
     editingNpc = null;
     peekedSecretNpc = null;
+    panelNotice = null;
+    if (noticeTimer) {
+      clearTimeout(noticeTimer);
+      noticeTimer = null;
+    }
     panel.classList.add("nl4-hidden");
   };
 
@@ -622,6 +629,35 @@ export function mountUi(host, engine) {
       }
       return s;
     });
+  };
+
+  const renderNoticeHtml = () =>
+    panelNotice
+      ? `<div id="nl4-panel-notice" class="nl4-notice nl4-notice-${esc(panelNotice.type)}" data-act="dismiss-notice" title="点击关闭提示">${esc(panelNotice.text)}</div>`
+      : "";
+
+  const notify = (type, msg) => {
+    const text = String(msg || "");
+    if (!text) return;
+    host.toast?.[type]?.(text);
+    if (!isOpen) return;
+    panelNotice = { type: type || "info", text };
+    let noticeEl = panel.querySelector("#nl4-panel-notice");
+    if (!noticeEl) {
+      noticeEl = document.createElement("div");
+      noticeEl.id = "nl4-panel-notice";
+      noticeEl.setAttribute("data-act", "dismiss-notice");
+      noticeEl.title = "点击关闭提示";
+      panel.appendChild(noticeEl);
+    }
+    noticeEl.className = `nl4-notice nl4-notice-${panelNotice.type}`;
+    noticeEl.textContent = text;
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => {
+      noticeTimer = null;
+      panelNotice = null;
+      panel.querySelector("#nl4-panel-notice")?.remove();
+    }, 4500);
   };
 
   // Tab 1: Master/Detail Characters + Dedicated Deceased Memorial Archive
@@ -1252,7 +1288,8 @@ export function mountUi(host, engine) {
       `<div class="${mainClass}">${body}</div>` +
       renderFoot(settings, budgetSnap) +
       renderRightBookTabs(chatState) +
-      `<div class="nl4-resize" title="拖拽缩放窗口"></div>`;
+      `<div class="nl4-resize" title="拖拽缩放窗口"></div>` +
+      renderNoticeHtml();
 
     const nextMain = panel.querySelector(".nl4-main");
     if (nextMain && prevMainScroll > 0) nextMain.scrollTop = prevMainScroll;
@@ -1302,6 +1339,15 @@ export function mountUi(host, engine) {
     const act = actBtn.dataset.act;
 
     if (act === "close") return close();
+    if (act === "dismiss-notice") {
+      if (noticeTimer) {
+        clearTimeout(noticeTimer);
+        noticeTimer = null;
+      }
+      panelNotice = null;
+      panel.querySelector("#nl4-panel-notice")?.remove();
+      return;
+    }
     if (act === "center-win") return centerPanel();
     if (act === "peek-secret") {
       peekedSecretNpc = actBtn.dataset.npc || null;
@@ -1328,11 +1374,11 @@ export function mountUi(host, engine) {
         const res = await engine.runUpdateTurn({ force: true, bypassBudget: true });
         if (res.ok) {
           if (res.truncated) {
-            host.toast.warn(`更新完成（变动 ${res.changedNpcs.length} 人），但输出被 maxTokens 截断，请在「接口」调大最大输出 Token`);
+            notify("warn", `更新完成（变动 ${res.changedNpcs.length} 人），但输出被 maxTokens 截断，请在「接口」调大最大输出 Token`);
           } else {
-            host.toast.success(`更新完成（变动 ${res.changedNpcs.length} 人，约 ${res.tokens} Token）`);
+            notify("success", `更新完成（变动 ${res.changedNpcs.length} 人，约 ${res.tokens} Token）`);
           }
-        } else host.toast.warn(res.error || res.reason || "本次未更新");
+        } else notify("warn", res.error || res.reason || "本次未更新");
       } finally {
         busyText = "";
         render();
@@ -1342,7 +1388,7 @@ export function mountUi(host, engine) {
 
     if (act === "add-npc") {
       const name = panel.querySelector("#nl4-add-name")?.value?.trim();
-      if (!name) return host.toast.warn("请填写角色名");
+      if (!name) return notify("warn", "请填写角色名");
       await engine.addNpc(name, {
         aliases: panel.querySelector("#nl4-add-aliases")?.value || "",
         身份锚点: panel.querySelector("#nl4-add-anchor")?.value || "",
@@ -1350,7 +1396,7 @@ export function mountUi(host, engine) {
         当前在做: panel.querySelector("#nl4-add-doing")?.value || ""
       });
       selectedNpc = name;
-      host.toast.success(`已添加角色「${name}」`);
+      notify("success", `已添加角色「${name}」`);
       render();
       return;
     }
@@ -1380,7 +1426,7 @@ export function mountUi(host, engine) {
       if (newName !== oldName) await engine.renameNpc(oldName, newName);
       selectedNpc = newName;
       editingNpc = null;
-      host.toast.success(`已保存「${newName}」`);
+      notify("success", `已保存「${newName}」`);
       render();
       return;
     }
@@ -1388,28 +1434,28 @@ export function mountUi(host, engine) {
     if (act === "toggle-npc") return await engine.toggleNpcTracked(actBtn.dataset.npc);
     if (act === "revive-npc") {
       await engine.reviveNpc(actBtn.dataset.npc);
-      host.toast.success(`已复活「${actBtn.dataset.npc}」`);
+      notify("success", `已复活「${actBtn.dataset.npc}」`);
       return;
     }
     if (act === "del-npc") {
       const target = actBtn.dataset.npc;
       await engine.deleteNpc(target);
       if (selectedNpc === target) selectedNpc = null;
-      host.toast.info(`已删除「${target}」`);
+      notify("info", `已删除「${target}」`);
       render();
       return;
     }
 
     if (act === "add-trend") {
       const content = panel.querySelector("#nl4-tr-content")?.value?.trim();
-      if (!content) return host.toast.warn("请填写世界近况内容");
+      if (!content) return notify("warn", "请填写世界近况内容");
       upsertWorldTrend(engine.getChatState(), {
         location: panel.querySelector("#nl4-tr-loc")?.value?.trim() || "全域",
         scope: panel.querySelector("#nl4-tr-scope")?.value || "公开",
         content
       });
       await engine.persistState(null, false);
-      host.toast.success("已添加世界近况");
+      notify("success", "已添加世界近况");
       return;
     }
     if (act === "settle-trend") {
@@ -1430,7 +1476,7 @@ export function mountUi(host, engine) {
     if (act === "add-clock") {
       const npc = panel.querySelector("#nl4-clk-npc")?.value?.trim();
       const title = panel.querySelector("#nl4-clk-title")?.value?.trim();
-      if (!npc || !title) return host.toast.warn("请填写角色名和危机原因");
+      if (!npc || !title) return notify("warn", "请填写角色名和危机原因");
       engine.getChatState().world.clocks.push(
         createClock({
           npc,
@@ -1441,7 +1487,7 @@ export function mountUi(host, engine) {
         })
       );
       await engine.persistState(null, false);
-      host.toast.success(`已为「${npc}」添加命运钟`);
+      notify("success", `已为「${npc}」添加命运钟`);
       return;
     }
 
@@ -1450,8 +1496,8 @@ export function mountUi(host, engine) {
       render();
       try {
         const res = await engine.scanClocksNow();
-        if (res.error) host.toast.warn(res.error);
-        else host.toast.success(`扫描 ${res.scanned} 条设定，新增 ${res.added} 个命运钟`);
+        if (res.error) notify("warn", res.error);
+        else notify("success", `扫描 ${res.scanned} 条设定，新增 ${res.added} 个命运钟`);
       } finally {
         busyText = "";
         render();
@@ -1462,7 +1508,7 @@ export function mountUi(host, engine) {
     if (act === "revive-clock") {
       reviveOrUndoClock(engine.getChatState(), actBtn.dataset.id);
       await engine.persistState(null, true);
-      host.toast.success("已复活并重置该命运钟");
+      notify("success", "已复活并重置该命运钟");
       return;
     }
     if (act === "toggle-clock") {
@@ -1496,9 +1542,9 @@ export function mountUi(host, engine) {
         const res = await fetchModelList(host, engine.getSettings());
         if (res.ok) {
           fetchedModels = res.models;
-          host.toast.success(`已获取 ${res.models.length} 个模型，可在下拉框直接选择`);
+          notify("success", `已获取 ${res.models.length} 个模型，可在下拉框直接选择`);
         } else {
-          host.toast.warn(`获取模型失败：${res.error}`);
+          notify("warn", `获取模型失败：${res.error}`);
         }
       } finally {
         busyText = "";
@@ -1513,8 +1559,8 @@ export function mountUi(host, engine) {
       render();
       try {
         const res = await testSubApiConnection(host, engine.getSettings());
-        if (res.ok) host.toast.success(`连通成功（${res.route}，耗时 ${(res.durationMs / 1000).toFixed(1)}s）`);
-        else host.toast.error(`连通失败：${res.error || res.reason}`);
+        if (res.ok) notify("success", `连通成功（${res.route}，耗时 ${(res.durationMs / 1000).toFixed(1)}s）`);
+        else notify("error", `连通失败：${res.error || res.reason}`);
       } finally {
         busyText = "";
         render();
@@ -1534,9 +1580,9 @@ export function mountUi(host, engine) {
           document.execCommand("copy");
           ta.remove();
         }
-        host.toast.success(`已复制当前默认提示词（共 ${text.length} 字）`);
+        notify("success", `已复制当前默认提示词（共 ${text.length} 字）`);
       } catch {
-        host.toast.warn("复制失败，请展开下方文本框手动全选复制");
+        notify("warn", "复制失败，请展开下方文本框手动全选复制");
       }
       return;
     }
@@ -1547,7 +1593,7 @@ export function mountUi(host, engine) {
         s.customSystemPrompt = val;
         return s;
       });
-      host.toast.success("已保存自定义主系统提示词");
+      notify("success", "已保存自定义主系统提示词");
       return;
     }
 
@@ -1556,13 +1602,13 @@ export function mountUi(host, engine) {
         s.customSystemPrompt = "";
         return s;
       });
-      host.toast.info("已恢复内置默认提示词");
+      notify("info", "已恢复内置默认提示词");
       return;
     }
 
     if (act === "add-seg") {
       const content = panel.querySelector("#nl4-seg-content")?.value?.trim();
-      if (!content) return host.toast.warn("请填写提示词内容");
+      if (!content) return notify("warn", "请填写提示词内容");
       engine.updateSettings((s) => {
         s.customSegments.push({
           id: `seg_${Date.now().toString(36)}`,
@@ -1579,8 +1625,8 @@ export function mountUi(host, engine) {
 
     if (act === "sync-wb") {
       const res = await syncWorldbook(host, engine.getChatState(), engine.getSettings());
-      if (res.ok) host.toast.success(res.removed ? "已移除世界书条目" : `已同步到「${res.bookName || "世界书"}」`);
-      else host.toast.warn(res.reason || "同步失败");
+      if (res.ok) notify("success", res.removed ? "已移除世界书条目" : `已同步到「${res.bookName || "世界书"}」`);
+      else notify("warn", res.reason || "同步失败");
       return;
     }
 
@@ -1625,11 +1671,11 @@ export function mountUi(host, engine) {
           } catch {}
         }
         if (!remoteVer) {
-          host.toast.warn("未能连接 GitHub 检查版本（请检查网络/代理）");
+          notify("warn", "未能连接 GitHub 检查版本（请检查网络/代理）");
         } else if (remoteVer === VERSION) {
-          host.toast.success(`当前已是最新版本 v${VERSION}`);
+          notify("success", `当前已是最新版本 v${VERSION}`);
         } else {
-          host.toast.info(`发现仓库版本 v${remoteVer}（当前 v${VERSION}），请到酒馆「扩展→管理扩展」点更新后强刷页面`);
+          notify("info", `发现仓库版本 v${remoteVer}（当前 v${VERSION}），请到酒馆「扩展→管理扩展」点更新后强刷页面`);
         }
       } finally {
         busyText = "";
@@ -1641,7 +1687,7 @@ export function mountUi(host, engine) {
     if (act === "clear-chat") {
       await engine.clearCurrentChat();
       selectedNpc = null;
-      host.toast.info("已清空当前聊天的 NPC Life 数据");
+      notify("info", "已清空当前聊天的 NPC Life 数据");
       render();
     }
   });
@@ -1688,10 +1734,10 @@ export function mountUi(host, engine) {
         const parsed = JSON.parse(text);
         await engine.importChatState(parsed);
         selectedNpc = null;
-        host.toast.success("成功导入聊天档案！");
+        notify("success", "成功导入聊天档案！");
         render();
       } catch (err) {
-        host.toast.error(`导入失败：${err?.message || err}`);
+        notify("error", `导入失败：${err?.message || err}`);
       } finally {
         el.value = "";
       }
@@ -1883,6 +1929,10 @@ export function mountUi(host, engine) {
       if (focusOutTimer) {
         clearTimeout(focusOutTimer);
         focusOutTimer = null;
+      }
+      if (noticeTimer) {
+        clearTimeout(noticeTimer);
+        noticeTimer = null;
       }
       while (healTimers.length) {
         clearTimeout(healTimers.pop());
