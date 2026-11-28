@@ -925,9 +925,12 @@
 /* ===== Dedicated Mobile UI: Compact Header +「人 | 信息」Side-by-Side Split View ===== */
 .nl4-root[data-layout="mobile"] .nl4-panel {
   left: 2vw !important;
-  top: 2dvh !important;
+  top: 2vh !important;
+  top: 2svh !important;
   width: 96vw !important;
-  height: 95dvh !important;
+  height: 95vh !important;
+  height: 95svh !important;
+  max-height: 96dvh !important;
   min-width: 0;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto auto minmax(0, 1fr) auto;
